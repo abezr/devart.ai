@@ -1,0 +1,6 @@
+name = "devart-ai-api"
+main = "src/index.ts"
+compatibility_date = "2024-05-30"
+
+# Add your Cloudflare Account ID here. Find it in your dashboard.
+# account_id = "__YOUR_ACCOUNT_ID__"
