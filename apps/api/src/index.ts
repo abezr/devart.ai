@@ -121,66 +121,62 @@ app.get('/api/tasks', async (c) => {
   }
 });
 
-// Task dispatch endpoint with Budget Supervisor integration
+// Task dispatch endpoint with Budget Supervisor integration and Audit Logging
 app.post('/api/tasks/dispatch', async (c) => {
-  try {
-    const { serviceId, cost } = await c.req.json<{ serviceId: string; cost: number }>();
+  // 1. VALIDATION: Now expecting taskId
+  const { taskId, serviceId, cost } = await c.req.json<{ taskId: string; serviceId: string; cost: number }>();
 
-    // Validate input parameters
-    if (!serviceId || typeof cost !== 'number' || cost < 0) {
-      return c.json({ 
-        error: 'Missing or invalid serviceId or cost. Cost must be a positive number.' 
-      }, 400);
-    }
-
-    const supabase = createSupabaseClient(c.env);
-    const { serviceToUse, wasSuspended, error } = await checkAndChargeService(supabase, serviceId, cost);
-
-    if (error) {
-      console.error('Budget check failed:', error);
-      return c.json({ error: 'Failed to process service charge' }, 500);
-    }
-
-    // If the service was just suspended, send a notification
-    if (wasSuspended) {
-      const message = `*Budget Alert* 🚨\n\nService *${serviceId}* has been automatically suspended due to exceeding its budget.\n\nUse the dashboard to increase the budget and reactivate the service.`;
-      await sendTelegramMessage(c.env, message);
-    }
-
-    if (!serviceToUse) {
-      // Budget exceeded and no substitutor available
-      return c.json({ 
-        error: `Budget exceeded for service '${serviceId}' and no substitutor is available.`,
-        status: 'SUSPENDED'
-      }, 402); // 402 Payment Required is semantically correct
-    }
-    
-    // Determine if the task was delegated to a substitutor service
-    const wasDelegated = serviceToUse.id !== serviceId;
-    
-    if (wasDelegated) {
-      console.log(`Task delegated from ${serviceId} to ${serviceToUse.id}`);
-    }
-
-    // --- This is where actual task dispatch logic would go ---
-    // In a real implementation, you would:
-    // 1. Use serviceToUse.api_endpoint to make the actual API call
-    // 2. Create a task record in the database
-    // 3. Queue the task for agent processing
-    console.log(`Dispatching task using service: ${serviceToUse.id} (${serviceToUse.display_name})`);
-
-    return c.json({
-      message: 'Task dispatched successfully.',
-      serviceUsed: serviceToUse.id,
-      wasDelegated: wasDelegated,
-      wasSuspended: wasSuspended,
-      cost: cost
-    });
-    
-  } catch (err) {
-    console.error('Unexpected error in task dispatch:', err);
-    return c.json({ error: 'Internal server error' }, 500);
+  if (!taskId || !serviceId || typeof cost !== 'number' || cost < 0) {
+    return c.json({ error: 'Missing or invalid taskId, serviceId, or cost' }, 400);
   }
+
+  const supabase = createSupabaseClient(c.env);
+  
+  const { data: rpcResponse, error: rpcError } = await supabase.rpc('charge_service', {
+    service_id_to_charge: serviceId,
+    charge_amount: cost,
+  });
+
+  if (rpcError) {
+    console.error('RPC Error:', rpcError);
+    return c.json({ error: 'Failed to process service charge' }, 500);
+  }
+
+  const { serviceToUse, wasSuspended, error: procedureError } = rpcResponse;
+
+  if (procedureError) {
+    return c.json({ error: procedureError }, 404);
+  }
+
+  if (wasSuspended) {
+    const message = `*Budget Alert* 🚨\n\nService *${serviceId}* has been automatically suspended due to exceeding its budget.`;
+    await sendTelegramMessage(c.env, message);
+  }
+
+  if (!serviceToUse) {
+    return c.json({ error: `Budget exceeded for service '${serviceId}' and no substitutor is available.` }, 402);
+  }
+  
+  // 2. LOGGING: Insert a record into the audit log.
+  const { error: logError } = await supabase.from('service_usage_log').insert({
+    task_id: taskId,
+    service_id: serviceToUse.id, // Log the service that was actually used
+    charge_amount: cost,
+  });
+
+  if (logError) {
+    // Do not fail the request, but log the error for observability.
+    console.error('Failed to write to audit log:', logError);
+  }
+
+  // --- Dispatch Logic would go here ---
+  console.log(`Dispatching task ${taskId} using service: ${serviceToUse.id}`);
+
+  return c.json({
+    message: 'Task dispatched successfully and usage logged.',
+    serviceUsed: serviceToUse.id,
+    wasDelegated: serviceToUse.id !== serviceId,
+  });
 });
 
 

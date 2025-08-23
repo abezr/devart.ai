@@ -99,3 +99,32 @@ BEGIN
   END IF;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Service Usage Log for Auditing
+-- Records every transaction, linking a task to a service charge.
+CREATE TABLE service_usage_log (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  service_id TEXT NOT NULL REFERENCES service_registry(id),
+  charge_amount NUMERIC NOT NULL CHECK (charge_amount >= 0),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Add an index for efficient querying of a task's history
+CREATE INDEX idx_service_usage_log_task_id ON service_usage_log(task_id);
+
+-- Add comments for clarity
+COMMENT ON TABLE service_usage_log IS 'Immutable log of every service charge associated with a task.';
+COMMENT ON COLUMN service_usage_log.task_id IS 'The task that triggered this service usage.';
+COMMENT ON COLUMN service_usage_log.service_id IS 'The service that was charged (could be the original or a substitutor).';
+COMMENT ON COLUMN service_usage_log.charge_amount IS 'The cost in USD for this specific transaction.';
+
+-- Add RLS policy
+ALTER TABLE service_usage_log ENABLE ROW LEVEL SECURITY;
+
+-- For now, create a permissive policy for authenticated users.
+-- This can be tightened later.
+CREATE POLICY "Allow authenticated users to read all logs"
+  ON service_usage_log FOR SELECT
+  TO authenticated
+  USING (true);
