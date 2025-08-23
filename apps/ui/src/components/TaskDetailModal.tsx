@@ -7,7 +7,7 @@ interface UsageLog {
   id: string;
   charge_amount: number;
   created_at: string;
-  service_registry: { display_name: string } | null;
+  service_registry: any;
 }
 
 export default function TaskDetailModal({ taskId, onClose }: { taskId: string; onClose: () => void }) {
@@ -31,7 +31,7 @@ export default function TaskDetailModal({ taskId, onClose }: { taskId: string; o
       if (error) {
         console.error('Error fetching usage logs:', error);
       } else {
-        setLogs(data as UsageLog[]);
+        setLogs(data || []);
       }
       setLoading(false);
     };

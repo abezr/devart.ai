@@ -107,7 +107,10 @@ app.get('/api/services/status', async (c) => {
 app.get('/api/agents', async (c) => {
   try {
     const supabase = createSupabaseClient(c.env);
-    const { data, error } = await supabase.from('agents').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabase
+      .from('agents')
+      .select('*')
+      .order('last_seen', { ascending: false });
     
     if (error) {
       console.error('Error fetching agents:', error);
@@ -136,6 +139,86 @@ app.get('/api/tasks', async (c) => {
   } catch (err) {
     console.error('Unexpected error fetching tasks:', err);
     return c.json({ error: 'Failed to fetch tasks' }, 500);
+  }
+});
+
+// Human-Supervisor Interface: Task Management Endpoints
+const VALID_PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+
+// POST /api/tasks - Create a new task
+app.post('/api/tasks', async (c) => {
+  try {
+    const { title, description, priority } = await c.req.json<{
+      title: string;
+      description?: string;
+      priority: string;
+    }>();
+
+    if (!title || !priority || !VALID_PRIORITIES.includes(priority)) {
+      return c.json({ error: 'Missing title or invalid priority' }, 400);
+    }
+
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase
+      .from('tasks')
+      .insert({ title, description, priority, status: 'TODO' })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating task:', error);
+      return c.json({ error: 'Could not create task' }, 500);
+    }
+    return c.json(data, 201);
+  } catch (err) {
+    console.error('Unexpected error creating task:', err);
+    return c.json({ error: 'Could not create task' }, 500);
+  }
+});
+
+// PUT /api/tasks/:taskId - Update an existing task
+app.put('/api/tasks/:taskId', async (c) => {
+  try {
+    const taskId = c.req.param('taskId');
+    const { title, description, priority } = await c.req.json();
+
+    if (priority && !VALID_PRIORITIES.includes(priority)) {
+      return c.json({ error: 'Invalid priority value' }, 400);
+    }
+
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase
+      .from('tasks')
+      .update({ title, description, priority })
+      .eq('id', taskId)
+      .select()
+      .single();
+
+    if (error) {
+      return c.json({ error: 'Task not found or could not be updated' }, 404);
+    }
+    return c.json(data);
+  } catch (err) {
+    console.error('Unexpected error updating task:', err);
+    return c.json({ error: 'Could not update task' }, 500);
+  }
+});
+
+// DELETE /api/tasks/:taskId - Delete a task
+app.delete('/api/tasks/:taskId', async (c) => {
+  try {
+    const taskId = c.req.param('taskId');
+    const supabase = createSupabaseClient(c.env);
+
+    const { error } = await supabase.from('tasks').delete().eq('id', taskId);
+
+    if (error) {
+      return c.json({ error: 'Task not found or could not be deleted' }, 404);
+    }
+    return c.json({ message: 'Task deleted successfully' }, 200);
+  } catch (err) {
+    console.error('Unexpected error deleting task:', err);
+    return c.json({ error: 'Could not delete task' }, 500);
   }
 });
 

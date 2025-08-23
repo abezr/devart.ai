@@ -1,6 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import TaskBoard from '../components/TaskBoard';
 import ServiceStatusPanel from '../components/ServiceStatusPanel';
+import CreateTaskForm from '../components/CreateTaskForm';
+import AgentMonitoringPanel from '../components/AgentMonitoringPanel';
 
 /**
  * Interface matching the Task database table structure
@@ -27,6 +29,18 @@ interface Service {
   current_usage_usd: number;
   status: 'ACTIVE' | 'SUSPENDED';
   substitutor_service_id: string | null;
+  created_at: string;
+}
+
+/**
+ * Interface matching the Agent database table structure
+ */
+interface Agent {
+  id: string;
+  alias: string;
+  status: 'IDLE' | 'BUSY';
+  capabilities: string[];
+  last_seen: string;
   created_at: string;
 }
 
@@ -88,11 +102,38 @@ async function getInitialServices(): Promise<Service[]> {
   }
 }
 
+/**
+ * Fetches initial agents on the server for SEO and performance
+ * This runs during server-side rendering and provides initial data
+ */
+async function getInitialAgents(): Promise<Agent[]> {
+  try {
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+    
+    const { data, error } = await supabase
+      .from('agents')
+      .select('*')
+      .order('last_seen', { ascending: false });
+    
+    if (error) {
+      console.error('Error fetching initial agents:', error);
+      return [];
+    }
+    
+    return data || [];
+  } catch (err) {
+    console.error('Unexpected error fetching initial agents:', err);
+    return [];
+  }
+}
+
 export default async function HomePage() {
   const initialTasks = await getInitialTasks();
-  const initialServices = await getInitialServices(); // Fetch services
-
-
+  const initialServices = await getInitialServices();
+  const initialAgents = await getInitialAgents();
 
   return (
     <main className="container mx-auto p-8">
@@ -102,13 +143,17 @@ export default async function HomePage() {
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        {/* Task Board Column - now using the real-time component */}
-        <div className="md:col-span-2">
+        {/* Left Column - Task Management */}
+        <div className="md:col-span-2 space-y-8">
+          <CreateTaskForm />
           <TaskBoard initialTasks={initialTasks} />
         </div>
 
-        {/* Service Status Column */}
-        <ServiceStatusPanel initialServices={initialServices} />
+        {/* Right Column - Monitoring Panels */}
+        <div className="space-y-8">
+          <ServiceStatusPanel initialServices={initialServices} />
+          <AgentMonitoringPanel initialAgents={initialAgents} />
+        </div>
       </div>
     </main>
   );
