@@ -1325,4 +1325,114 @@ app.post('/api/marketplace', async (c) => {
   return c.json(newItem, 201);
 });
 
+// =====================================================
+// Visual Workflow Monitor Implementation
+// =====================================================
+
+// GET /api/tasks/:taskId/lineage - Get task lineage for visualization
+app.get('/api/tasks/:taskId/lineage', async (c) => {
+  const taskId = c.req.param('taskId');
+  
+  if (!taskId) {
+    return c.json({ error: 'Task ID is required' }, 400);
+  }
+  
+  const supabase = createSupabaseClient(c.env);
+  
+  try {
+    // Get the target task first
+    const { data: targetTask, error: taskError } = await supabase
+      .from('tasks')
+      .select('id, title, status, priority, parent_task_id')
+      .eq('id', taskId)
+      .single();
+      
+    if (taskError || !targetTask) {
+      return c.json({ error: 'Task not found' }, 404);
+    }
+    
+    // Recursive function to get all ancestors
+    const getAncestors = async (taskId: string, depth = 0): Promise<any[]> => {
+      // Safety check to prevent infinite loops
+      if (depth > 10) return [];
+      
+      const { data: parentTask, error } = await supabase
+        .from('tasks')
+        .select('id, title, status, priority, parent_task_id')
+        .eq('id', taskId)
+        .single();
+        
+      if (error || !parentTask || !parentTask.parent_task_id) {
+        return [];
+      }
+      
+      const ancestors = await getAncestors(parentTask.parent_task_id, depth + 1);
+      return [...ancestors, parentTask];
+    };
+    
+    // Recursive function to get all descendants
+    const getDescendants = async (taskId: string, depth = 0): Promise<any[]> => {
+      // Safety check to prevent infinite loops
+      if (depth > 10) return [];
+      
+      const { data: childTasks, error } = await supabase
+        .from('tasks')
+        .select('id, title, status, priority, parent_task_id')
+        .eq('parent_task_id', taskId);
+        
+      if (error || !childTasks || childTasks.length === 0) {
+        return [];
+      }
+      
+      let allDescendants = [...childTasks];
+      for (const child of childTasks) {
+        const descendants = await getDescendants(child.id, depth + 1);
+        allDescendants = [...allDescendants, ...descendants];
+      }
+      
+      return allDescendants;
+    };
+    
+    // Get ancestors and descendants
+    const ancestors = await getAncestors(taskId);
+    const descendants = await getDescendants(taskId);
+    
+    // Combine all tasks
+    const allTasks = [targetTask, ...ancestors, ...descendants];
+    
+    // Remove duplicates
+    const uniqueTasks = allTasks.filter((task, index, self) => 
+      index === self.findIndex(t => t.id === task.id)
+    );
+    
+    // Create nodes and edges for visualization
+    const nodes = uniqueTasks.map(task => ({
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      priority: task.priority,
+      type: 'task'
+    }));
+    
+    const edges = uniqueTasks
+      .filter(task => task.parent_task_id)
+      .map(task => ({
+        id: `edge-${task.parent_task_id}-${task.id}`,
+        source: task.parent_task_id,
+        target: task.id,
+        type: 'parent-child'
+      }));
+    
+    return c.json({
+      nodes,
+      edges,
+      selectedTaskId: taskId
+    });
+    
+  } catch (err) {
+    console.error('Error fetching task lineage:', err);
+    return c.json({ error: 'Failed to fetch task lineage' }, 500);
+  }
+});
+
 export default app;

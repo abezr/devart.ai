@@ -547,3 +547,81 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION check_workflow_completion IS 'Checks if a workflow is complete and updates its status atomically.';
+
+-- =====================================================
+-- Centralized Activity Feed Implementation
+-- =====================================================
+
+-- Activity Log Table
+-- A real-time, append-only log of all significant system events.
+CREATE TABLE activity_log (
+  id BIGSERIAL PRIMARY KEY,
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  event_type TEXT NOT NULL, -- e.g., 'TASK_CREATED', 'AGENT_CLAIMED_TASK', 'SERVICE_SUSPENDED'
+  details JSONB,
+  severity TEXT DEFAULT 'INFO' -- 'INFO', 'WARN', 'ERROR'
+);
+
+COMMENT ON TABLE activity_log IS 'A real-time, append-only log of all significant system events.';
+
+-- PostgreSQL trigger function to automatically populate the activity log
+CREATE OR REPLACE FUNCTION log_activity()
+RETURNS TRIGGER AS $$
+DECLARE
+  event_type_text TEXT;
+  details_jsonb JSONB;
+BEGIN
+  IF (TG_OP = 'INSERT' AND TG_TABLE_NAME = 'tasks') THEN
+    event_type_text := 'TASK_CREATED';
+    details_jsonb := jsonb_build_object('taskId', NEW.id, 'title', NEW.title);
+  ELSIF (TG_OP = 'UPDATE' AND TG_TABLE_NAME = 'tasks') THEN
+    IF OLD.status <> NEW.status THEN
+      event_type_text := 'TASK_STATUS_CHANGED';
+      details_jsonb := jsonb_build_object('taskId', NEW.id, 'title', NEW.title, 'from', OLD.status, 'to', NEW.status);
+    END IF;
+    -- Check for agent assignment
+    IF OLD.agent_id IS DISTINCT FROM NEW.agent_id THEN
+      event_type_text := 'TASK_ASSIGNED';
+      details_jsonb := jsonb_build_object('taskId', NEW.id, 'title', NEW.title, 'agentId', NEW.agent_id);
+    END IF;
+  ELSIF (TG_OP = 'INSERT' AND TG_TABLE_NAME = 'agents') THEN
+    event_type_text := 'AGENT_REGISTERED';
+    details_jsonb := jsonb_build_object('agentId', NEW.id, 'alias', NEW.alias);
+  ELSIF (TG_OP = 'UPDATE' AND TG_TABLE_NAME = 'agents') THEN
+    IF OLD.status <> NEW.status THEN
+      event_type_text := 'AGENT_STATUS_CHANGED';
+      details_jsonb := jsonb_build_object('agentId', NEW.id, 'alias', NEW.alias, 'from', OLD.status, 'to', NEW.status);
+    END IF;
+  ELSIF (TG_OP = 'UPDATE' AND TG_TABLE_NAME = 'service_registry') THEN
+    IF OLD.status <> NEW.status AND NEW.status = 'SUSPENDED' THEN
+      event_type_text := 'SERVICE_SUSPENDED';
+      details_jsonb := jsonb_build_object('serviceId', NEW.id, 'displayName', NEW.display_name);
+    ELSIF OLD.status <> NEW.status AND NEW.status = 'ACTIVE' THEN
+      event_type_text := 'SERVICE_REACTIVATED';
+      details_jsonb := jsonb_build_object('serviceId', NEW.id, 'displayName', NEW.display_name);
+    ELSIF OLD.monthly_budget_usd <> NEW.monthly_budget_usd THEN
+      event_type_text := 'BUDGET_INCREASED';
+      details_jsonb := jsonb_build_object('serviceId', NEW.id, 'displayName', NEW.display_name, 'newBudget', NEW.monthly_budget_usd);
+    END IF;
+  END IF;
+
+  IF event_type_text IS NOT NULL THEN
+    INSERT INTO activity_log (event_type, details, severity) VALUES (event_type_text, details_jsonb, 'INFO');
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Triggers for activity logging
+CREATE TRIGGER tasks_activity_trigger
+  AFTER INSERT OR UPDATE ON tasks
+  FOR EACH ROW EXECUTE PROCEDURE log_activity();
+
+CREATE TRIGGER agents_activity_trigger
+  AFTER INSERT OR UPDATE ON agents
+  FOR EACH ROW EXECUTE PROCEDURE log_activity();
+
+CREATE TRIGGER service_registry_activity_trigger
+  AFTER UPDATE ON service_registry
+  FOR EACH ROW EXECUTE PROCEDURE log_activity();

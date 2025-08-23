@@ -10,6 +10,7 @@ import TaskAnalyticsPanel from '../components/TaskAnalyticsPanel';
 import AgentRegistrationPanel from '../components/AgentRegistrationPanel';
 import SettingsPanel from '../components/SettingsPanel';
 import WorkflowManagementPanel from '../components/WorkflowManagementPanel';
+import ActivityFeedPanel from '../components/ActivityFeedPanel';
 
 /**
  * Interface matching the Task database table structure
@@ -171,6 +172,7 @@ export default async function HomePage() {
           <AgentMonitoringPanel initialAgents={initialAgents} />
           <TaskAnalyticsPanel />
           <WorkflowManagementPanel />
+          <ActivityFeedPanel />
         </div>
       </div>
 
