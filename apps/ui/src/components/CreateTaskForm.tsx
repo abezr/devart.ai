@@ -6,6 +6,7 @@ export default function CreateTaskForm() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState('MEDIUM');
+  const [capabilities, setCapabilities] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -13,6 +14,12 @@ export default function CreateTaskForm() {
     e.preventDefault();
     setIsSubmitting(true);
     setMessage('');
+
+    // Parse capabilities from comma-separated string to array
+    const capabilitiesArray = capabilities
+      .split(',')
+      .map(cap => cap.trim())
+      .filter(cap => cap.length > 0);
 
     try {
       const response = await fetch('/api/tasks', {
@@ -22,10 +29,22 @@ export default function CreateTaskForm() {
       });
 
       if (response.ok) {
+        const taskData = await response.json();
+        
+        // If capabilities were provided, update the task with them
+        if (capabilitiesArray.length > 0) {
+          await fetch(`/api/tasks/${taskData.id}/capabilities`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ capabilities: capabilitiesArray }),
+          });
+        }
+        
         setMessage('Task created successfully!');
         setTitle('');
         setDescription('');
         setPriority('MEDIUM');
+        setCapabilities('');
       } else {
         const { error } = await response.json();
         setMessage(`Error: ${error}`);
@@ -82,6 +101,20 @@ export default function CreateTaskForm() {
             <option value="HIGH">HIGH</option>
             <option value="CRITICAL">CRITICAL</option>
           </select>
+        </div>
+        <div>
+          <label htmlFor="capabilities" className="block text-sm font-medium text-gray-300">
+            Required Capabilities (comma-separated)
+          </label>
+          <input
+            id="capabilities"
+            type="text"
+            value={capabilities}
+            onChange={(e) => setCapabilities(e.target.value)}
+            placeholder="e.g., python, code-review, testing"
+            className="mt-1 block w-full bg-gray-700 border border-gray-600 rounded-md shadow-sm py-2 px-3 text-white focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+          />
+          <p className="mt-1 text-xs text-gray-400">List the skills required for this task, separated by commas</p>
         </div>
         <div className="flex items-center justify-between">
           <button

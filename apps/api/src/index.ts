@@ -584,38 +584,40 @@ app.put('/api/agents/heartbeat', async (c) => {
   return c.json({ message: 'Heartbeat updated successfully' });
 });
 
-// // DEPRECATED: Orchestration Engine: Agent Task Claiming Endpoint (with API key auth)
-// // This endpoint has been deprecated in favor of the RabbitMQ-based task distribution system
-// app.post('/api/agents/claim-task', async (c) => {
-//   const { agentId, apiKey } = await c.req.json<{ agentId: string; apiKey: string }>();
-// 
-//   if (!agentId || !apiKey) {
-//     return c.json({ error: 'Agent ID and API key are required' }, 400);
-//   }
-// 
-//   const supabase = createSupabaseClient(c.env);
-// 
-//   // Verify the API key
-//   const agent = await verifyAgentApiKey(apiKey, supabase);
-//   if (!agent || agent.id !== agentId) {
-//     return c.json({ error: 'Invalid API key or agent not active' }, 401);
-//   }
-// 
-//   const { data: claimedTask, error } = await supabase.rpc('claim_next_task', {
-//     requesting_agent_id: agentId,
-//   });
-// 
-//   if (error) {
-//     console.error('Error claiming task:', error);
-//     return c.json({ error: 'Failed to claim task' }, 500);
-//   }
-// 
-//   if (!claimedTask) {
-//     return c.json({ message: 'No available tasks to claim.' }, 404);
-//   }
-// 
-//   return c.json(claimedTask);
-// });
+// Orchestration Engine: Agent Task Claiming Endpoint (with API key auth)
+// This endpoint uses capability-aware task dispatch
+app.post('/api/agents/:agentId/claim-task', async (c) => {
+  const agentId = c.req.param('agentId');
+  const { apiKey } = await c.req.json<{ apiKey: string }>();
+
+  if (!agentId || !apiKey) {
+    return c.json({ error: 'Agent ID and API key are required' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  // Verify the API key
+  const agent = await verifyAgentApiKey(apiKey, supabase);
+  if (!agent || agent.id !== agentId) {
+    return c.json({ error: 'Invalid API key or agent not active' }, 401);
+  }
+
+  // Call the new, capability-aware function
+  const { data: claimedTask, error } = await supabase.rpc('claim_next_task_by_capability', {
+    requesting_agent_id: agentId,
+  });
+
+  if (error) {
+    console.error('Error claiming task:', error);
+    return c.json({ error: 'Failed to claim task' }, 500);
+  }
+
+  if (!claimedTask) {
+    return c.json({ message: 'No available and suitable tasks to claim.' }, 404);
+  }
+
+  return c.json(claimedTask);
+});
 
 // Orchestration Engine: Task Status Update Endpoint (with API key auth)
 app.put('/api/tasks/:taskId/status', async (c) => {
@@ -1540,6 +1542,31 @@ app.post('/api/tasks/:taskId/solution-applied', async (c) => {
     console.error('Error reporting solution application:', err);
     return c.json({ error: 'Failed to report solution application' }, 500);
   }
+});
+
+// PUT /api/tasks/:taskId/capabilities - Update task capability requirements
+// This endpoint allows a supervisor to add or update the skill requirements for a specific task
+app.put('/api/tasks/:taskId/capabilities', async (c) => {
+  // This endpoint should be protected by RBAC (supervisor/admin)
+  const taskId = c.req.param('taskId');
+  const { capabilities } = await c.req.json<{ capabilities: string[] }>();
+
+  if (!Array.isArray(capabilities)) {
+    return c.json({ error: 'Capabilities must be an array of strings.' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({ required_capabilities: capabilities })
+    .eq('id', taskId)
+    .select()
+    .single();
+
+  if (error) {
+    return c.json({ error: 'Task not found or could not be updated.' }, 404);
+  }
+  return c.json(data);
 });
 
 export default app;

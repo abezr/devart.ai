@@ -101,6 +101,7 @@ CREATE TABLE tasks (
   status TEXT NOT NULL DEFAULT 'TODO', -- 'TODO', 'IN_PROGRESS', 'DONE', 'QUARANTINED', 'PENDING_BUDGET_APPROVAL'
   priority TEXT DEFAULT 'MEDIUM', -- 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'
   agent_id TEXT, -- Identifier for the agent working on it
+  required_capabilities JSONB, -- A JSON array of strings representing skills needed for this task
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -109,6 +110,12 @@ CREATE TABLE tasks (
 ALTER TABLE tasks
   DROP COLUMN IF EXISTS agent_id,
   ADD COLUMN agent_id UUID REFERENCES agents(id) ON DELETE SET NULL;
+
+-- Add comment for required_capabilities column
+COMMENT ON COLUMN tasks.required_capabilities IS 'A JSON array of strings representing skills needed for this task, e.g., ''["python", "code-review"]''.';
+
+-- Create a GIN index for efficient searching of capabilities.
+CREATE INDEX idx_tasks_required_capabilities ON tasks USING GIN (required_capabilities);
 
 COMMENT ON COLUMN tasks.agent_id IS 'The agent currently assigned to this task.';
 
@@ -281,6 +288,52 @@ BEGIN
   RETURNING * INTO claimed_task;
 
   -- Also update the agent's status to BUSY
+  IF claimed_task IS NOT NULL THEN
+    UPDATE agents SET status = 'BUSY', last_seen = NOW() WHERE id = requesting_agent_id;
+  END IF;
+
+  RETURN claimed_task;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Capability-Aware Task Claiming Function
+-- This function atomically finds the next available task that matches the agent's capabilities,
+-- assigns it to an agent, and returns the task. This prevents race conditions in a distributed system.
+CREATE OR REPLACE FUNCTION claim_next_task_by_capability(requesting_agent_id UUID)
+RETURNS tasks AS $$
+DECLARE
+  claimed_task tasks;
+  agent_capabilities JSONB;
+BEGIN
+  -- 1. Get the capabilities of the requesting agent.
+  SELECT capabilities INTO agent_capabilities FROM agents WHERE id = requesting_agent_id;
+
+  -- 2. Find and claim the highest-priority task that the agent is qualified for.
+  UPDATE tasks
+  SET
+    status = 'IN_PROGRESS',
+    agent_id = requesting_agent_id
+  WHERE id = (
+    SELECT id FROM tasks
+    WHERE
+      status = 'TODO'
+      -- The core matching logic: task requirements are a subset of agent capabilities.
+      AND (required_capabilities IS NULL OR required_capabilities <@ agent_capabilities)
+    ORDER BY 
+      CASE priority 
+        WHEN 'CRITICAL' THEN 1
+        WHEN 'HIGH' THEN 2
+        WHEN 'MEDIUM' THEN 3
+        WHEN 'LOW' THEN 4
+        ELSE 5
+      END,
+      created_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+  )
+  RETURNING * INTO claimed_task;
+
+  -- 3. Update the agent's status to BUSY if a task was claimed.
   IF claimed_task IS NOT NULL THEN
     UPDATE agents SET status = 'BUSY', last_seen = NOW() WHERE id = requesting_agent_id;
   END IF;

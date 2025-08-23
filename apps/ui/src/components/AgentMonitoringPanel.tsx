@@ -7,7 +7,7 @@ interface Agent {
   id: string;
   alias: string;
   status: 'IDLE' | 'BUSY';
-  capabilities: string[];
+  capabilities: string[] | null;
   is_active: boolean;
   last_seen: string;
   created_at: string;
@@ -116,7 +116,7 @@ export default function AgentMonitoringPanel({ initialAgents }: AgentMonitoringP
               <p className="text-xs text-gray-400">
                 Last seen: {timeAgo(agent.last_seen)}
               </p>
-              {agent.capabilities && agent.capabilities.length > 0 && (
+              {agent.capabilities && agent.capabilities.length > 0 ? (
                 <div className="mt-2">
                   <div className="flex flex-wrap gap-1">
                     {agent.capabilities.map((capability, index) => (
@@ -128,6 +128,10 @@ export default function AgentMonitoringPanel({ initialAgents }: AgentMonitoringP
                       </span>
                     ))}
                   </div>
+                </div>
+              ) : (
+                <div className="mt-2">
+                  <span className="text-xs text-gray-500">No specific capabilities</span>
                 </div>
               )}
             </div>

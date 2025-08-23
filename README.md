@@ -76,6 +76,8 @@ graph TD
 
 **Performance Analytics**: A dedicated dashboard panel provides insights into task costs and workflow performance.
 
+**Intelligent Agent Dispatch**: A capability-aware task dispatch system that matches the right agent to the right job based on skills and requirements. See [Capability-Aware Dispatch Documentation](CAPABILITY_AWARE_DISPATCH.md) for details.
+
 ## 🚀 Getting Started
 
 ### 1. Prerequisites
@@ -122,6 +124,8 @@ pnpm dev
 **Sandboxes**: Ephemeral, isolated Kubernetes Pods or Jobs provisioned on-demand for agents to perform their work, ensuring a clean and secure execution environment.
 
 **Agent SDK**: A dedicated SDK (e.g., [devart-agent-template](devart-agent-template)) provides a simple interface for agents to connect to the message queue and interact with the platform's API.
+
+**Agent Capabilities**: Agents can declare their skills and specializations, enabling the intelligent dispatch system to match them with appropriate tasks.
 
 ## 🗺️ Future Roadmap
 
