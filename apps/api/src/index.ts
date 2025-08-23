@@ -4,6 +4,7 @@ import { createSupabaseClient } from './lib/supabase';
 import { checkAndChargeService, getAllServicesStatus } from './services/budget';
 import { sendTelegramMessage } from './services/telegram';
 import { generateEmbedding } from './services/embedding';
+import { postPRComment, createCheckRun } from './services/github';
 
 // This is the Cloudflare environment, which includes secrets
 export type Env = {
@@ -177,7 +178,7 @@ app.post('/api/tasks/:taskId/create-successor', async (c) => {
   // 1. Fetch the parent task to inherit its properties
   const { data: parentTask, error: fetchError } = await supabase
     .from('tasks')
-    .select('priority')
+    .select('priority, parent_task_id')
     .eq('id', parentTaskId)
     .single();
 
@@ -185,7 +186,62 @@ app.post('/api/tasks/:taskId/create-successor', async (c) => {
     return c.json({ error: 'Parent task not found' }, 404);
   }
 
-  // 2. Create the new successor task
+  // 2. Check if the parent task was part of a workflow
+  let workflowCheck;
+  if (parentTask.parent_task_id) {
+    // If the parent has a parent, check if that ancestor is part of a workflow
+    workflowCheck = await supabase
+      .from('task_templates as tt')
+      .select('tt.workflow_id, tt.stage_order')
+      .join('tasks as t', 't.id', 'tt.id')
+      .join('tasks as parent', 'parent.parent_task_id', 't.id')
+      .eq('parent.id', parentTaskId);
+  } else {
+    // Otherwise, check if the parent itself is part of a workflow
+    workflowCheck = await supabase
+      .from('task_templates')
+      .select('workflow_id, stage_order')
+      .eq('id', parentTaskId);
+  }
+
+  const { data: workflowData, error: workflowError } = workflowCheck;
+
+  // 3. If parent is part of a workflow, find the next task template
+  if (!workflowError && workflowData && workflowData.length > 0) {
+    const workflow = workflowData[0];
+    
+    // Get the next task template in the sequence
+    const { data: nextTaskTemplate, error: nextTemplateError } = await supabase
+      .from('task_templates')
+      .select('*')
+      .eq('workflow_id', workflow.workflow_id)
+      .eq('stage_order', workflow.stage_order + 1)
+      .single();
+
+    if (!nextTemplateError && nextTaskTemplate) {
+      // Create the next task in the workflow
+      const { data: successorTask, error: insertError } = await supabase
+        .from('tasks')
+        .insert({
+          title: nextTaskTemplate.title_template, // In a real implementation, this would be rendered with context
+          description: nextTaskTemplate.description_template || undefined,
+          priority: nextTaskTemplate.priority,
+          status: 'TODO',
+          parent_task_id: parentTaskId, // Link to the parent
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error('Error creating successor task:', insertError);
+        return c.json({ error: 'Could not create successor task' }, 500);
+      }
+
+      return c.json(successorTask, 201);
+    }
+  }
+
+  // 4. If not part of a workflow or no next template, create a regular successor task
   const { data: successorTask, error: insertError } = await supabase
     .from('tasks')
     .insert({
@@ -590,6 +646,132 @@ app.put('/api/tasks/:taskId/status', async (c) => {
   return c.json(updatedTask);
 });
 
+// Agent Execution Sandboxing: Request a sandbox for an agent
+app.post('/api/agents/:agentId/request-sandbox', async (c) => {
+  const agentId = c.req.param('agentId');
+  const { taskId } = await c.req.json<{ taskId: string }>();
+
+  // Validate input
+  if (!taskId) {
+    return c.json({ error: 'Task ID is required' }, 400);
+  }
+
+  // Verify agent exists and is active
+  const supabase = createSupabaseClient(c.env);
+  const { data: agent, error: agentError } = await supabase
+    .from('agents')
+    .select('id, is_active')
+    .eq('id', agentId)
+    .single();
+
+  if (agentError || !agent) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+
+  if (!agent.is_active) {
+    return c.json({ error: 'Agent is not active' }, 400);
+  }
+
+  // Verify task exists
+  const { data: task, error: taskError } = await supabase
+    .from('tasks')
+    .select('id')
+    .eq('id', taskId)
+    .single();
+
+  if (taskError || !task) {
+    return c.json({ error: 'Task not found' }, 404);
+  }
+
+  // --- Placeholder for Provisioning Logic ---
+  // In a real system, this would call a Docker API, Kubernetes API, or a cloud service.
+  // Example implementation outline:
+  // 1. Generate unique container name
+  // 2. Call container orchestration API to create container
+  // 3. Configure container with required environment and dependencies
+  // 4. Set up networking and security policies
+  const containerId = `sandbox-${crypto.randomUUID()}`;
+  const connectionDetails = { host: 'localhost', port: 2222 }; // Example
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes from now
+  
+  console.log(`Provisioning sandbox ${containerId} for task ${taskId}...`);
+  // --- End of Placeholder ---
+
+  // Create sandbox record in database
+  const { data: sandbox, error } = await supabase
+    .from('agent_sandboxes')
+    .insert({
+      agent_id: agentId,
+      task_id: taskId,
+      status: 'ACTIVE', // Assume provisioning is instant for this example
+      container_id: containerId,
+      connection_details: connectionDetails,
+      expires_at: expiresAt.toISOString(),
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Failed to create sandbox record:', error);
+    return c.json({ error: 'Failed to create sandbox record' }, 500);
+  }
+
+  return c.json(sandbox, 201);
+});
+
+// Agent Execution Sandboxing: Terminate a sandbox
+app.delete('/api/sandboxes/:sandboxId', async (c) => {
+  const sandboxId = c.req.param('sandboxId');
+  
+  // Validate input
+  if (!sandboxId) {
+    return c.json({ error: 'Sandbox ID is required' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+  
+  // Verify sandbox exists
+  const { data: sandbox, error: fetchError } = await supabase
+    .from('agent_sandboxes')
+    .select('id, container_id, status')
+    .eq('id', sandboxId)
+    .single();
+
+  if (fetchError || !sandbox) {
+    return c.json({ error: 'Sandbox not found' }, 404);
+  }
+
+  // Check if sandbox is already terminated
+  if (sandbox.status === 'TERMINATED') {
+    return c.json({ message: 'Sandbox already terminated' });
+  }
+
+  // --- Placeholder for Termination Logic ---
+  // In a real system, this would call a Docker API, Kubernetes API, or a cloud service.
+  // Example implementation outline:
+  // 1. Call container orchestration API to stop and remove container
+  // 2. Clean up any associated resources (volumes, networks, etc.)
+  // 3. Update any monitoring or logging systems
+  console.log(`Terminating sandbox ${sandboxId} (container: ${sandbox.container_id})...`);
+  // --- End of Placeholder ---
+  
+  // Update sandbox status in database
+  const { error } = await supabase
+    .from('agent_sandboxes')
+    .update({ 
+      status: 'TERMINATED',
+      expires_at: new Date().toISOString() // Set expiration to now
+    })
+    .eq('id', sandboxId);
+
+  if (error) {
+    console.error('Failed to update sandbox status:', error);
+    return c.json({ error: 'Failed to terminate sandbox' }, 500);
+  }
+
+  return c.json({ message: 'Sandbox terminated successfully' });
+});
+
 // =====================================================
 // System Configuration Management Endpoints
 // =====================================================
@@ -770,6 +952,25 @@ app.get('/api/analytics/task-costs', async (c) => {
   }
 });
 
+// GitHub Integration: Post PR feedback
+app.post('/api/integrations/github/pr-feedback', async (c) => {
+  const { owner, repo, prNumber, sha, comment, status } = await c.req.json();
+
+  if (!owner || !repo || !prNumber || !sha || !status) {
+    return c.json({ error: 'Missing required GitHub parameters' }, 400);
+  }
+
+  // Post a comment if one is provided
+  if (comment) {
+    await postPRComment(c.env, owner, repo, prNumber, comment);
+  }
+
+  // Create a status check
+  await createCheckRun(c.env, owner, repo, sha, status, 'AI Code Review', comment || 'Review complete.');
+
+  return c.json({ message: 'Feedback posted to GitHub successfully.' });
+});
+
 // Analytics: Service Usage Summary
 app.get('/api/analytics/service-usage', async (c) => {
   try {
@@ -817,6 +1018,131 @@ app.post('/api/analytics/flag-costly-tasks', async (c) => {
     console.error('Unexpected error flagging costly tasks:', err);
     return c.json({ error: 'Failed to flag costly tasks' }, 500);
   }
+});
+
+// Workflow Engine: Get all workflows
+app.get('/api/workflows', async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  
+  const { data, error } = await supabase
+    .from('workflows')
+    .select('*')
+    .order('name');
+    
+  if (error) {
+    console.error('Error fetching workflows:', error);
+    return c.json({ error: 'Could not fetch workflows' }, 500);
+  }
+  
+  return c.json(data || []);
+});
+
+// Workflow Engine: Create a new workflow
+app.post('/api/workflows', async (c) => {
+  const { name, description } = await c.req.json<{ name: string; description?: string }>();
+  
+  if (!name) {
+    return c.json({ error: 'Workflow name is required' }, 400);
+  }
+  
+  const supabase = createSupabaseClient(c.env);
+  
+  const { data, error } = await supabase
+    .from('workflows')
+    .insert({ name, description })
+    .select()
+    .single();
+    
+  if (error) {
+    console.error('Error creating workflow:', error);
+    return c.json({ error: 'Could not create workflow' }, 500);
+  }
+  
+  return c.json(data, 201);
+});
+
+// Workflow Engine: Get task templates for a workflow
+app.get('/api/workflows/:workflowId/templates', async (c) => {
+  const workflowId = c.req.param('workflowId');
+  
+  const supabase = createSupabaseClient(c.env);
+  
+  const { data, error } = await supabase
+    .from('task_templates')
+    .select('*')
+    .eq('workflow_id', workflowId)
+    .order('stage_order');
+    
+  if (error) {
+    console.error('Error fetching task templates:', error);
+    return c.json({ error: 'Could not fetch task templates' }, 500);
+  }
+  
+  return c.json(data || []);
+});
+
+// Workflow Engine: Trigger a workflow
+app.post('/api/workflows/:workflowId/trigger', async (c) => {
+  const workflowId = c.req.param('workflowId');
+  const context = await c.req.json<Record<string, any>>();
+
+  const supabase = createSupabaseClient(c.env);
+
+  // Get the first task template in the workflow
+  const { data: firstTaskTemplate, error: templateError } = await supabase
+    .from('task_templates')
+    .select('*')
+    .eq('workflow_id', workflowId)
+    .order('stage_order', { ascending: true })
+    .limit(1)
+    .single();
+
+  if (templateError || !firstTaskTemplate) {
+    return c.json({ error: 'Workflow not found or has no tasks' }, 404);
+  }
+
+  // Template rendering function with better error handling
+  const renderTemplate = (template: string, context: Record<string, any>): string => {
+    try {
+      let result = template;
+      // Replace all template variables in the format {{variable_name}}
+      for (const [key, value] of Object.entries(context)) {
+        const regex = new RegExp(`{{\\s*${key}\\s*}}`, 'g');
+        result = result.replace(regex, String(value));
+      }
+      return result;
+    } catch (error) {
+      console.error('Template rendering error:', error);
+      return template; // Return original template if rendering fails
+    }
+  };
+
+  // Render the template with context
+  const title = renderTemplate(firstTaskTemplate.title_template, context);
+  const description = firstTaskTemplate.description_template 
+    ? renderTemplate(firstTaskTemplate.description_template, context)
+    : undefined;
+
+  // Create the first task
+  const { data: task, error: taskError } = await supabase
+    .from('tasks')
+    .insert({
+      title,
+      description,
+      priority: firstTaskTemplate.priority,
+      status: 'TODO',
+    })
+    .select()
+    .single();
+
+  if (taskError) {
+    return c.json({ error: 'Failed to create initial task' }, 500);
+  }
+
+  return c.json({ 
+    message: 'Workflow triggered successfully',
+    initialTask: task
+  });
 });
 
 

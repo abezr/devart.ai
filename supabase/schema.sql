@@ -379,6 +379,40 @@ ALTER TABLE tasks
 
 COMMENT ON COLUMN tasks.review_flag IS 'If true, this task is flagged for supervisor review due to performance outliers.';
 
+-- Agent Sandboxes Table
+-- Tracks isolated execution environments for agents.
+CREATE TABLE agent_sandboxes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
+  task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'PROVISIONING', -- 'PROVISIONING', 'ACTIVE', 'TERMINATED'
+  container_id TEXT, -- The ID from the container runtime (e.g., Docker container ID)
+  connection_details JSONB, -- e.g., { "host": "...", "port": 22 }
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ
+);
+
+COMMENT ON TABLE agent_sandboxes IS 'Tracks isolated execution environments for agents.';
+
+-- Workflow Engine Tables
+-- Tracks predefined, reusable workflows
+CREATE TABLE workflows (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL UNIQUE,
+  description TEXT
+);
+
+-- Task templates for workflows
+CREATE TABLE task_templates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_id UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  stage_order INT NOT NULL,
+  title_template TEXT NOT NULL, -- e.g., "Build service: service_name"
+  description_template TEXT,
+  priority TEXT NOT NULL DEFAULT 'MEDIUM',
+  UNIQUE (workflow_id, stage_order)
+);
+
 -- This function identifies tasks with costs above a configurable threshold
 -- and flags them for review. The threshold is now stored in system_settings.
 CREATE OR REPLACE FUNCTION flag_costly_tasks()
