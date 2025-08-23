@@ -189,4 +189,77 @@ BEGIN
 
   RETURN claimed_task;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;-- =====================================================
+-- Intelligence and Analytics Layer
+-- =====================================================
+-- Ensure the 'vector' extension is enabled in the Supabase dashboard under Database > Extensions.
+-- The vector extension provides vector similarity search capabilities.
+
+-- Knowledge Base Table
+-- Stores text chunks and their vector embeddings for semantic search.
+CREATE TABLE knowledge_base (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  content TEXT NOT NULL,
+  embedding VECTOR(1536), -- 1536 is the dimension for OpenAI's text-embedding-ada-002
+  source TEXT, -- e.g., 'ADR-001.md', 'auth_service/utils.py'
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+COMMENT ON TABLE knowledge_base IS 'Stores vectorized content for agent context retrieval.';
+COMMENT ON COLUMN knowledge_base.embedding IS 'Vector embedding of the content (1536 dimensions for OpenAI text-embedding-ada-002).';
+COMMENT ON COLUMN knowledge_base.source IS 'The origin of the content for reference.';
+
+-- Create index for vector similarity search performance
+-- Note: This will be created after pgvector extension is enabled
+-- CREATE INDEX knowledge_base_embedding_idx ON knowledge_base USING ivfflat (embedding vector_cosine_ops);
+
+-- Analytics View - Task Cost Summary
+-- This view aggregates the total cost for each task from the audit log.
+CREATE OR REPLACE VIEW task_cost_summary AS
+  SELECT
+    t.id AS task_id,
+    t.title AS task_title,
+    t.status AS task_status,
+    t.priority AS task_priority,
+    COUNT(sul.id) AS usage_count,
+    COALESCE(SUM(sul.charge_amount), 0) AS total_cost,
+    t.created_at AS task_created_at
+  FROM
+    tasks AS t
+  LEFT JOIN
+    service_usage_log AS sul ON t.id = sul.task_id
+  GROUP BY
+    t.id, t.title, t.status, t.priority, t.created_at
+  ORDER BY
+    total_cost DESC;
+
+COMMENT ON VIEW task_cost_summary IS 'Aggregated view showing cost analysis for each task.';
+
+-- Semantic Search Function
+-- This function performs a semantic search on the knowledge base using cosine similarity.
+CREATE OR REPLACE FUNCTION match_knowledge (
+  query_embedding VECTOR(1536),
+  match_threshold FLOAT DEFAULT 0.7,
+  match_count INT DEFAULT 10
+)
+RETURNS TABLE (
+  id UUID,
+  content TEXT,
+  source TEXT,
+  similarity FLOAT
+)
+LANGUAGE sql STABLE AS $$
+  SELECT
+    kb.id,
+    kb.content,
+    kb.source,
+    1 - (kb.embedding <=> query_embedding) AS similarity
+  FROM
+    knowledge_base AS kb
+  WHERE 1 - (kb.embedding <=> query_embedding) > match_threshold
+  ORDER BY
+    similarity DESC
+  LIMIT match_count;
+$$;
+
+COMMENT ON FUNCTION match_knowledge IS 'Performs semantic search on knowledge base using cosine similarity. Returns matching content with similarity scores.';

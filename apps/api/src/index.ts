@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 import { createSupabaseClient } from './lib/supabase';
 import { checkAndChargeService, getAllServicesStatus } from './services/budget';
 import { sendTelegramMessage } from './services/telegram';
+import { generateEmbedding } from './services/embedding';
 
 // This is the Cloudflare environment, which includes secrets
 export type Env = {
@@ -10,6 +11,7 @@ export type Env = {
   SUPABASE_SERVICE_KEY: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
+  OPENAI_API_KEY?: string; // For Intelligence and Analytics Layer embeddings
 };
 
 const app = new Hono<{ Bindings: Env }>();
@@ -403,6 +405,137 @@ app.put('/api/tasks/:taskId/status', async (c) => {
   }
 
   return c.json(updatedTask);
+});
+
+// =====================================================
+// Intelligence and Analytics Layer Endpoints
+// =====================================================
+
+// Knowledge Ingestion: Add new content to knowledge base
+app.post('/api/knowledge', async (c) => {
+  try {
+    const { content, source } = await c.req.json<{ content: string; source?: string }>();
+
+    if (!content || content.trim().length === 0) {
+      return c.json({ error: 'Content is required and cannot be empty' }, 400);
+    }
+
+    // 1. Generate the embedding for the content
+    const embedding = await generateEmbedding(c.env, content);
+    if (!embedding) {
+      return c.json({ error: 'Failed to generate embedding for the content' }, 500);
+    }
+
+    // 2. Store the content and its embedding in the database
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase
+      .from('knowledge_base')
+      .insert({ 
+        content: content.trim(), 
+        source: source || null, 
+        embedding 
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error saving to knowledge base:', error);
+      return c.json({ error: 'Could not save knowledge entry' }, 500);
+    }
+
+    return c.json(data, 201);
+  } catch (err) {
+    console.error('Unexpected error in knowledge ingestion:', err);
+    return c.json({ error: 'Failed to process knowledge ingestion' }, 500);
+  }
+});
+
+// Knowledge Search: Semantic search in knowledge base
+app.post('/api/knowledge/search', async (c) => {
+  try {
+    const { query, threshold = 0.7, limit = 10 } = await c.req.json<{
+      query: string;
+      threshold?: number;
+      limit?: number;
+    }>();
+
+    if (!query || query.trim().length === 0) {
+      return c.json({ error: 'Query is required and cannot be empty' }, 400);
+    }
+
+    // 1. Generate embedding for the search query
+    const queryEmbedding = await generateEmbedding(c.env, query);
+    if (!queryEmbedding) {
+      return c.json({ error: 'Failed to generate embedding for search query' }, 500);
+    }
+
+    // 2. Use the match_knowledge function for semantic search
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase.rpc('match_knowledge', {
+      query_embedding: queryEmbedding,
+      match_threshold: threshold,
+      match_count: limit
+    });
+
+    if (error) {
+      console.error('Error in semantic search:', error);
+      return c.json({ error: 'Failed to perform semantic search' }, 500);
+    }
+
+    return c.json(data || []);
+  } catch (err) {
+    console.error('Unexpected error in knowledge search:', err);
+    return c.json({ error: 'Failed to process knowledge search' }, 500);
+  }
+});
+
+// Analytics: Task Cost Summary
+app.get('/api/analytics/task-costs', async (c) => {
+  try {
+    const supabase = createSupabaseClient(c.env);
+    // Query the task_cost_summary view for aggregated cost data
+    const { data, error } = await supabase.from('task_cost_summary').select('*');
+
+    if (error) {
+      console.error('Error fetching task cost analytics:', error);
+      return c.json({ error: 'Could not fetch analytics data' }, 500);
+    }
+    
+    return c.json(data || []);
+  } catch (err) {
+    console.error('Unexpected error fetching analytics:', err);
+    return c.json({ error: 'Failed to fetch task cost analytics' }, 500);
+  }
+});
+
+// Analytics: Service Usage Summary
+app.get('/api/analytics/service-usage', async (c) => {
+  try {
+    const supabase = createSupabaseClient(c.env);
+    
+    // Get service usage statistics
+    const { data, error } = await supabase
+      .from('service_usage_log')
+      .select(`
+        service_id,
+        count(*) as usage_count,
+        sum(charge_amount) as total_cost,
+        avg(charge_amount) as avg_cost,
+        max(created_at) as last_used
+      `)
+      .group('service_id')
+      .order('total_cost', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching service usage analytics:', error);
+      return c.json({ error: 'Could not fetch service usage data' }, 500);
+    }
+    
+    return c.json(data || []);
+  } catch (err) {
+    console.error('Unexpected error fetching service usage:', err);
+    return c.json({ error: 'Failed to fetch service usage analytics' }, 500);
+  }
 });
 
 

@@ -3,6 +3,7 @@ import TaskBoard from '../components/TaskBoard';
 import ServiceStatusPanel from '../components/ServiceStatusPanel';
 import CreateTaskForm from '../components/CreateTaskForm';
 import AgentMonitoringPanel from '../components/AgentMonitoringPanel';
+import TaskAnalyticsPanel from '../components/TaskAnalyticsPanel';
 
 /**
  * Interface matching the Task database table structure
@@ -153,6 +154,7 @@ export default async function HomePage() {
         <div className="space-y-8">
           <ServiceStatusPanel initialServices={initialServices} />
           <AgentMonitoringPanel initialAgents={initialAgents} />
+          <TaskAnalyticsPanel />
         </div>
       </div>
     </main>
