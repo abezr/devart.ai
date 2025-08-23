@@ -4,7 +4,8 @@ import time
 import pika
 import json
 import threading
-from typing import Callable, Dict, Any
+from typing import Callable, Dict, Any, List
+from functools import wraps
 
 class AgentSDK:
     def __init__(self, agent_id: str, api_key: str, api_base_url: str):
@@ -17,6 +18,7 @@ class AgentSDK:
         self.rabbitmq_channel = None
         self.consumer_thread = None
         self.running = False
+        self.solution_attempts = {}  # Track solution application attempts
 
     def _connect_to_rabbitmq(self):
         """Establish a connection to RabbitMQ."""
@@ -80,8 +82,8 @@ class AgentSDK:
                     # Get the full task details from the API
                     task = self.get_task_details(task_id)
                     if task:
-                        # Call the user's callback function with the task
-                        success = callback(task)
+                        # Try to execute the task with self-healing
+                        success = self._execute_task_with_self_healing(task, callback)
                         
                         if success:
                             # Acknowledge the message if processing was successful
@@ -173,4 +175,153 @@ class AgentSDK:
             print(f"Error updating task status: {e}")
             return None
     
+    def report_error(self, task_id: str, error_message: str):
+        """Report an error to the API and update task status."""
+        url = f"{self.api_base_url}/api/tasks/{task_id}/error"
+        payload = {"agentId": self.agent_id, "errorMessage": error_message}
+        try:
+            response = requests.put(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error reporting task error: {e}")
+            return None
+    
+    def query_knowledge_base(self, error_message: str, threshold: float = 0.7, limit: int = 10) -> List[Dict]:
+        """Query the knowledge base for solutions to the error."""
+        url = f"{self.api_base_url}/api/knowledge/search"
+        payload = {
+            "query": error_message,
+            "threshold": threshold,
+            "limit": limit
+        }
+        try:
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error querying knowledge base: {e}")
+            return []
+    
+    def apply_solution(self, task_id: str, solution: Dict) -> bool:
+        """Apply a solution to a task before retrying."""
+        # Log the solution application attempt
+        if task_id not in self.solution_attempts:
+            self.solution_attempts[task_id] = []
+        
+        attempt = {
+            'solution_id': solution.get('id'),
+            'timestamp': time.time(),
+            'content': solution.get('content')
+        }
+        self.solution_attempts[task_id].append(attempt)
+        
+        # This is a placeholder implementation. In a real implementation,
+        # this would apply the solution to the task.
+        print(f"Applying solution for task {task_id}: {solution.get('content', 'No content')}")
+        print(f"Solution source: {solution.get('source', 'Unknown')}")
+        
+        # Report solution application to the API
+        self._report_solution_application(task_id, solution.get('id'), True)
+        
+        # For now, we'll just return True to indicate success
+        return True
+    
+    def _report_solution_application(self, task_id: str, solution_id: str, success: bool):
+        """Report solution application outcome to the API."""
+        url = f"{self.api_base_url}/api/tasks/{task_id}/solution-applied"
+        payload = {
+            "agentId": self.agent_id,
+            "solutionId": solution_id,
+            "success": success
+        }
+        try:
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error reporting solution application: {e}")
+            return None
+    
+    def _execute_task_with_self_healing(self, task: Dict[str, Any], callback: Callable[[Dict[str, Any]], bool]) -> bool:
+        """
+        Execute a task with self-healing capabilities.
+        
+        Args:
+            task: The task dictionary
+            callback: The task execution callback function
+            
+        Returns:
+            bool: True if task was successful, False otherwise
+        """
+        task_id = task.get('id')
+        print(f"Executing task {task_id} with self-healing capabilities")
+        
+        try:
+            # Try to execute the task
+            success = callback(task)
+            
+            if success:
+                print(f"Task {task_id} completed successfully")
+                return True
+            else:
+                # Task failed, try to heal
+                return self._attempt_self_healing(task, callback)
+        except Exception as e:
+            error_message = str(e)
+            print(f"Task {task_id} failed with error: {error_message}")
+            
+            # Report the error
+            self.report_error(task_id, error_message)
+            
+            # Try to heal
+            return self._attempt_self_healing(task, callback)
+    
+    def _attempt_self_healing(self, task: Dict[str, Any], callback: Callable[[Dict[str, Any]], bool]) -> bool:
+        """
+        Attempt to heal a failed task by querying the knowledge base for solutions.
+        
+        Args:
+            task: The task dictionary
+            callback: The task execution callback function
+            
+        Returns:
+            bool: True if task was successfully healed, False otherwise
+        """
+        task_id = task.get('id')
+        last_error = task.get('last_error', 'Unknown error')
+        
+        print(f"Attempting self-healing for task {task_id} with error: {last_error}")
+        
+        # Query the knowledge base for solutions
+        solutions = self.query_knowledge_base(last_error)
+        
+        if solutions:
+            print(f"Found {len(solutions)} potential solutions for task {task_id}")
+            
+            # Try the most relevant solution first
+            best_solution = solutions[0]
+            print(f"Applying best solution: {best_solution.get('content', 'No content')}")
+            
+            # Apply the solution
+            if self.apply_solution(task_id, best_solution):
+                # Try to execute the task again
+                try:
+                    success = callback(task)
+                    if success:
+                        print(f"Task {task_id} healed successfully with solution")
+                        return True
+                    else:
+                        print(f"Task {task_id} still failed after applying solution")
+                        return False
+                except Exception as e:
+                    print(f"Task {task_id} still failed after applying solution: {e}")
+                    return False
+            else:
+                print(f"Failed to apply solution for task {task_id}")
+                return False
+        else:
+            print(f"No solutions found for task {task_id}")
+            return False
+
     # Add other methods like `log_usage`, `create_successor`, etc.

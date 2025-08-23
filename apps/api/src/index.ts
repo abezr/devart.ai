@@ -11,6 +11,8 @@ import { publishTask } from './services/rabbitmq';
 
 // Import the Kubernetes service functions
 import { provisionSandbox, terminateSandbox } from './services/kubernetes';
+import { searchKnowledge } from './services/knowledge';
+import { rateLimitKnowledgeQueries, validateKnowledgeSearchRequest } from './lib/knowledgeMiddleware';
 
 // This is the Cloudflare environment, which includes secrets
 export type Env = {
@@ -1022,33 +1024,36 @@ app.post('/api/knowledge/search', async (c) => {
       limit?: number;
     }>();
 
-    if (!query || query.trim().length === 0) {
-      return c.json({ error: 'Query is required and cannot be empty' }, 400);
+    if (!query) {
+      return c.json({ error: 'Query is required' }, 400);
     }
 
-    // 1. Generate embedding for the search query
-    const queryEmbedding = await generateEmbedding(c.env, query);
-    if (!queryEmbedding) {
-      return c.json({ error: 'Failed to generate embedding for search query' }, 500);
-    }
-
-    // 2. Use the match_knowledge function for semantic search
-    const supabase = createSupabaseClient(c.env);
-    const { data, error } = await supabase.rpc('match_knowledge', {
-      query_embedding: queryEmbedding,
-      match_threshold: threshold,
-      match_count: limit
-    });
-
-    if (error) {
-      console.error('Error in semantic search:', error);
-      return c.json({ error: 'Failed to perform semantic search' }, 500);
-    }
-
-    return c.json(data || []);
+    const results = await searchKnowledge(c.env, query, threshold, limit);
+    return c.json(results);
   } catch (err) {
-    console.error('Unexpected error in knowledge search:', err);
-    return c.json({ error: 'Failed to process knowledge search' }, 500);
+    console.error('Error searching knowledge base:', err);
+    return c.json({ error: 'Failed to search knowledge base' }, 500);
+  }
+});
+
+// POST /api/knowledge/search - Search the knowledge base for solutions
+app.post('/api/knowledge/search', rateLimitKnowledgeQueries, validateKnowledgeSearchRequest, async (c) => {
+  try {
+    const { query, threshold = 0.7, limit = 10 } = await c.req.json<{
+      query: string;
+      threshold?: number;
+      limit?: number;
+    }>();
+
+    if (!query) {
+      return c.json({ error: 'Query is required' }, 400);
+    }
+
+    const results = await searchKnowledge(c.env, query, threshold, limit);
+    return c.json(results);
+  } catch (err) {
+    console.error('Error searching knowledge base:', err);
+    return c.json({ error: 'Failed to search knowledge base' }, 500);
   }
 });
 
@@ -1432,6 +1437,108 @@ app.get('/api/tasks/:taskId/lineage', async (c) => {
   } catch (err) {
     console.error('Error fetching task lineage:', err);
     return c.json({ error: 'Failed to fetch task lineage' }, 500);
+  }
+});
+
+// PUT /api/tasks/:taskId/error - Update task with error information
+app.put('/api/tasks/:taskId/error', async (c) => {
+  try {
+    const taskId = c.req.param('taskId');
+    const { agentId, errorMessage } = await c.req.json<{
+      agentId: string;
+      errorMessage: string;
+    }>();
+
+    if (!taskId || !agentId || !errorMessage) {
+      return c.json({ error: 'taskId, agentId, and errorMessage are required' }, 400);
+    }
+
+    const supabase = createSupabaseClient(c.env);
+
+    // Verify that the task is assigned to this agent
+    const { data: task, error: fetchError } = await supabase
+      .from('tasks')
+      .select('retry_count, max_retries')
+      .eq('id', taskId)
+      .eq('agent_id', agentId)
+      .single();
+
+    if (fetchError || !task) {
+      return c.json({ error: 'Task not found or agent not authorized' }, 404);
+    }
+
+    // Update the task with error information and increment retry count
+    const newRetryCount = task.retry_count + 1;
+    let nextStatus = 'TODO'; // Default to retry
+
+    // If we've reached max retries, quarantine the task
+    if (newRetryCount >= task.max_retries) {
+      nextStatus = 'QUARANTINED';
+    }
+
+    const { data: updatedTask, error: updateError } = await supabase
+      .from('tasks')
+      .update({
+        status: nextStatus,
+        retry_count: newRetryCount,
+        last_error: errorMessage,
+        agent_id: null, // Release the agent
+      })
+      .eq('id', taskId)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error updating task with error:', updateError);
+      return c.json({ error: 'Could not update task with error' }, 500);
+    }
+
+    // If the task should be retried, republish it with exponential backoff
+    if (nextStatus === 'TODO') {
+      // Calculate exponential backoff delay
+      const baseDelay = 5000; // 5 seconds base delay
+      const delayMs = baseDelay * Math.pow(2, task.retry_count);
+      const maxDelay = 300000; // Maximum 5 minutes delay
+      const finalDelay = Math.min(delayMs, maxDelay);
+
+      try {
+        await publishTask(taskId, finalDelay);
+      } catch (publishError) {
+        console.error('Failed to republish task:', publishError);
+        // Don't fail the request if republishing fails, just log it
+      }
+    }
+
+    return c.json(updatedTask);
+  } catch (err) {
+    console.error('Error updating task with error:', err);
+    return c.json({ error: 'Failed to update task with error' }, 500);
+  }
+});
+
+// POST /api/tasks/:taskId/solution-applied - Report solution application outcome
+app.post('/api/tasks/:taskId/solution-applied', async (c) => {
+  try {
+    const taskId = c.req.param('taskId');
+    const { agentId, solutionId, success } = await c.req.json<{
+      agentId: string;
+      solutionId: string;
+      success: boolean;
+    }>();
+
+    if (!taskId || !agentId || !solutionId) {
+      return c.json({ error: 'taskId, agentId, and solutionId are required' }, 400);
+    }
+
+    // In a real implementation, we would log this information to a database
+    // for analytics and to improve the knowledge base
+    console.log(`Solution ${solutionId} applied to task ${taskId} by agent ${agentId}. Success: ${success}`);
+
+    // For now, we'll just return a success response
+    return c.json({ message: 'Solution application reported successfully' });
+  } catch (err) {
+    console.error('Error reporting solution application:', err);
+    return c.json({ error: 'Failed to report solution application' }, 500);
   }
 });
 
