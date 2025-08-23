@@ -1,4 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
+import { createServerComponentClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 import TaskBoard from '../components/TaskBoard';
 import ServiceStatusPanel from '../components/ServiceStatusPanel';
 import CreateTaskForm from '../components/CreateTaskForm';
@@ -135,6 +138,14 @@ async function getInitialAgents(): Promise<Agent[]> {
 }
 
 export default async function HomePage() {
+  // Add authentication check
+  const supabase = createServerComponentClient({ cookies });
+  const { data: { session } } = await supabase.auth.getSession();
+
+  if (!session) {
+    redirect('/login');
+  }
+
   const initialTasks = await getInitialTasks();
   const initialServices = await getInitialServices();
   const initialAgents = await getInitialAgents();

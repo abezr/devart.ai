@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Grafana Iframe Embedding</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #1a202c;
+            color: #e2e8f0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .panel {
+            margin-bottom: 30px;
+            border: 1px solid #4a5568;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .panel-header {
+            background-color: #2d3748;
+            padding: 10px 15px;
+            font-weight: bold;
+        }
+        .panel-content {
+            height: 400px;
+        }
+        iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Test Grafana Iframe Embedding</h1>
+        <p>This page tests the embedding of Grafana panels using iframes.</p>
+        
+        <div class="panel">
+            <div class="panel-header">Task Throughput Panel</div>
+            <div class="panel-content">
+                <!-- Replace the src with your actual Grafana panel URL -->
+                <iframe src="http://localhost:3001/d-solo/task-analytics/Task%20Throughput?orgId=1&panelId=1" title="Task Throughput"></iframe>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <div class="panel-header">Agent Status Panel</div>
+            <div class="panel-content">
+                <!-- Replace the src with your actual Grafana panel URL -->
+                <iframe src="http://localhost:3001/d-solo/agent-status/Agent%20Status?orgId=1&panelId=2" title="Agent Status"></iframe>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <div class="panel-header">Average Task Cost Panel</div>
+            <div class="panel-content">
+                <!-- Replace the src with your actual Grafana panel URL -->
+                <iframe src="http://localhost:3001/d-solo/task-cost/Average%20Task%20Cost?orgId=1&panelId=3" title="Average Task Cost"></iframe>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
