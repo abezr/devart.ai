@@ -11,6 +11,22 @@ CREATE TABLE service_registry (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Agent Registry
+-- This table tracks all available GenAI agents and their current status.
+CREATE TABLE agents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  alias TEXT NOT NULL UNIQUE, -- A human-readable name, e.g., 'python-refactor-agent-01'
+  status TEXT NOT NULL DEFAULT 'IDLE', -- 'IDLE', 'BUSY'
+  capabilities JSONB, -- e.g., '["python", "react", "code-review"]'
+  last_seen TIMESTAMPTZ DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+COMMENT ON TABLE agents IS 'Registry for all GenAI agents, their status, and capabilities.';
+COMMENT ON COLUMN agents.status IS 'The current working status of the agent.';
+COMMENT ON COLUMN agents.capabilities IS 'A set of tags describing what the agent can do.';
+COMMENT ON COLUMN agents.last_seen IS 'A heartbeat timestamp to monitor agent health.';
+
 -- Tasks Table
 -- This table holds all development tasks for the GenAI agents.
 CREATE TABLE tasks (
@@ -24,6 +40,13 @@ CREATE TABLE tasks (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Modify the tasks table to properly link to the agents table
+ALTER TABLE tasks
+  DROP COLUMN IF EXISTS agent_id,
+  ADD COLUMN agent_id UUID REFERENCES agents(id) ON DELETE SET NULL;
+
+COMMENT ON COLUMN tasks.agent_id IS 'The agent currently assigned to this task.';
+
 -- Subscriptions for Telegram Notifications
 CREATE TABLE subscriptions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -36,6 +59,7 @@ CREATE TABLE subscriptions (
 -- NOTE: You must also enable this in the Supabase Dashboard under Database > Replication.
 ALTER TABLE tasks REPLICA IDENTITY FULL;
 ALTER TABLE service_registry REPLICA IDENTITY FULL;
+ALTER TABLE agents REPLICA IDENTITY FULL;
 
 -- Initial data for demonstration
 INSERT INTO service_registry (id, display_name, api_endpoint, monthly_budget_usd) VALUES
@@ -128,3 +152,41 @@ CREATE POLICY "Allow authenticated users to read all logs"
   ON service_usage_log FOR SELECT
   TO authenticated
   USING (true);
+
+-- Orchestration Engine: Atomic Task Claiming Function
+-- This function atomically finds the next available task, assigns it to an agent,
+-- and returns the task. This prevents race conditions in a distributed system.
+CREATE OR REPLACE FUNCTION claim_next_task(requesting_agent_id UUID)
+RETURNS tasks AS $$
+DECLARE
+  claimed_task tasks;
+BEGIN
+  UPDATE tasks
+  SET
+    status = 'IN_PROGRESS',
+    agent_id = requesting_agent_id
+  WHERE id = (
+    SELECT id FROM tasks
+    WHERE status = 'TODO'
+    ORDER BY 
+      CASE priority 
+        WHEN 'CRITICAL' THEN 1
+        WHEN 'HIGH' THEN 2
+        WHEN 'MEDIUM' THEN 3
+        WHEN 'LOW' THEN 4
+        ELSE 5
+      END,
+      created_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+  )
+  RETURNING * INTO claimed_task;
+
+  -- Also update the agent's status to BUSY
+  IF claimed_task IS NOT NULL THEN
+    UPDATE agents SET status = 'BUSY', last_seen = NOW() WHERE id = requesting_agent_id;
+  END IF;
+
+  RETURN claimed_task;
+END;
+$$ LANGUAGE plpgsql;

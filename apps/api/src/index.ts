@@ -103,6 +103,24 @@ app.get('/api/services/status', async (c) => {
   }
 });
 
+// Orchestration Engine: Get all agents for monitoring
+app.get('/api/agents', async (c) => {
+  try {
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase.from('agents').select('*').order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('Error fetching agents:', error);
+      return c.json({ error: error.message }, 500);
+    }
+    
+    return c.json(data || []);
+  } catch (err) {
+    console.error('Unexpected error fetching agents:', err);
+    return c.json({ error: 'Failed to fetch agents' }, 500);
+  }
+});
+
 // Example route to get all tasks
 app.get('/api/tasks', async (c) => {
   try {
@@ -177,6 +195,131 @@ app.post('/api/tasks/dispatch', async (c) => {
     serviceUsed: serviceToUse.id,
     wasDelegated: serviceToUse.id !== serviceId,
   });
+});
+
+// Orchestration Engine: Agent Registration Endpoint
+app.post('/api/agents/register', async (c) => {
+  const { alias, capabilities } = await c.req.json<{ alias: string; capabilities?: string[] }>();
+
+  if (!alias) {
+    return c.json({ error: 'Agent alias is required' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  // Register the agent in the agents table
+  const { data: newAgent, error } = await supabase
+    .from('agents')
+    .insert({
+      alias,
+      capabilities: capabilities || [],
+      status: 'IDLE',
+      last_seen: new Date().toISOString()
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Error registering agent:', error);
+    if (error.code === '23505') { // Unique constraint violation
+      return c.json({ error: 'Agent alias already exists' }, 409);
+    }
+    return c.json({ error: 'Failed to register agent' }, 500);
+  }
+
+  return c.json(newAgent);
+});
+
+// Orchestration Engine: Agent Heartbeat Endpoint
+app.put('/api/agents/:agentId/heartbeat', async (c) => {
+  const agentId = c.req.param('agentId');
+
+  if (!agentId) {
+    return c.json({ error: 'Agent ID is required' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  // Update the agent's last_seen timestamp
+  const { data: updatedAgent, error } = await supabase
+    .from('agents')
+    .update({ last_seen: new Date().toISOString() })
+    .eq('id', agentId)
+    .select()
+    .single();
+
+  if (error || !updatedAgent) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+
+  return c.json({ message: 'Heartbeat updated successfully' });
+});
+
+// Orchestration Engine: Agent Task Claiming Endpoint
+app.post('/api/agents/:agentId/claim-task', async (c) => {
+  const agentId = c.req.param('agentId');
+
+  if (!agentId) {
+    return c.json({ error: 'Agent ID is required' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  const { data: claimedTask, error } = await supabase.rpc('claim_next_task', {
+    requesting_agent_id: agentId,
+  });
+
+  if (error) {
+    console.error('Error claiming task:', error);
+    return c.json({ error: 'Failed to claim task' }, 500);
+  }
+
+  if (!claimedTask) {
+    return c.json({ message: 'No available tasks to claim.' }, 404);
+  }
+
+  return c.json(claimedTask);
+});
+
+// Orchestration Engine: Task Status Update Endpoint
+app.put('/api/tasks/:taskId/status', async (c) => {
+  const taskId = c.req.param('taskId');
+  const { agentId, newStatus } = await c.req.json<{ agentId: string; newStatus: string }>();
+
+  const validStatuses = ['DONE', 'QUARANTINED', 'IN_PROGRESS']; // Example valid statuses
+  if (!agentId || !newStatus || !validStatuses.includes(newStatus)) {
+    return c.json({ error: 'Missing or invalid agentId or newStatus' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  // 1. Atomically update the task status, ONLY if the agentId matches.
+  const { data: updatedTask, error: updateError } = await supabase
+    .from('tasks')
+    .update({ status: newStatus })
+    .eq('id', taskId)
+    .eq('agent_id', agentId) // CRITICAL: Ownership check
+    .select()
+    .single();
+
+  if (updateError || !updatedTask) {
+    return c.json({ error: 'Task not found or agent not authorized to update.' }, 404);
+  }
+
+  // 2. If task is finished, set agent back to IDLE.
+  if (newStatus === 'DONE' || newStatus === 'QUARANTINED') {
+    const { error: agentUpdateError } = await supabase
+      .from('agents')
+      .update({ status: 'IDLE' })
+      .eq('id', agentId);
+
+    if (agentUpdateError) {
+      // Log the error but don't fail the request, as the primary task was updated.
+      console.error(`Failed to reset agent ${agentId} to IDLE:`, agentUpdateError);
+    }
+  }
+
+  return c.json(updatedTask);
 });
 
 
