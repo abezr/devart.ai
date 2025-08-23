@@ -12,6 +12,7 @@ export type Env = {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
   OPENAI_API_KEY?: string; // For Intelligence and Analytics Layer embeddings
+  GITHUB_WEBHOOK_SECRET?: string; // For GitHub webhook verification
 };
 
 const app = new Hono<{ Bindings: Env }>();
@@ -21,6 +22,18 @@ app.use('/api/*', cors({
   origin: ['http://localhost:3000', 'https://devart.ai'], // Add your production UI URL here
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 }));
+
+// Helper function for GitHub signature verification
+async function verifyGitHubSignature(secret: string, request: Request, body: string): Promise<boolean> {
+  const signature = request.headers.get('x-hub-signature-256');
+  if (!signature) return false;
+
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
+  const hexMac = Array.from(new Uint8Array(mac)).map(b => b.toString(16).padStart(2, '0')).join('');
+  
+  return `sha256=${hexMac}` === signature;
+}
 
 
 // --- API Routes ---
@@ -146,6 +159,97 @@ app.get('/api/tasks', async (c) => {
 
 // Human-Supervisor Interface: Task Management Endpoints
 const VALID_PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+
+// POST /api/tasks/:taskId/create-successor - Create a successor task (for task chaining)
+app.post('/api/tasks/:taskId/create-successor', async (c) => {
+  const parentTaskId = c.req.param('taskId');
+  const { title, description } = await c.req.json<{
+    title: string;
+    description?: string;
+  }>();
+
+  if (!title) {
+    return c.json({ error: 'Successor task title is required' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  // 1. Fetch the parent task to inherit its properties
+  const { data: parentTask, error: fetchError } = await supabase
+    .from('tasks')
+    .select('priority')
+    .eq('id', parentTaskId)
+    .single();
+
+  if (fetchError || !parentTask) {
+    return c.json({ error: 'Parent task not found' }, 404);
+  }
+
+  // 2. Create the new successor task
+  const { data: successorTask, error: insertError } = await supabase
+    .from('tasks')
+    .insert({
+      title,
+      description,
+      priority: parentTask.priority, // Inherit priority
+      status: 'TODO',
+      parent_task_id: parentTaskId, // Link to the parent
+    })
+    .select()
+    .single();
+
+  if (insertError) {
+    console.error('Error creating successor task:', insertError);
+    return c.json({ error: 'Could not create successor task' }, 500);
+  }
+
+  return c.json(successorTask, 201);
+});
+
+// GitHub Webhook Handler: Create code review tasks from PR events
+app.post('/api/webhooks/github', async (c) => {
+  try {
+    const body = await c.req.text();
+    
+    // Verify webhook signature if secret is configured
+    if (c.env.GITHUB_WEBHOOK_SECRET) {
+      const isVerified = await verifyGitHubSignature(c.env.GITHUB_WEBHOOK_SECRET, c.req.raw, body);
+
+      if (!isVerified) {
+        return c.json({ error: 'Invalid signature' }, 401);
+      }
+    }
+
+    const payload = JSON.parse(body);
+
+    // Check if it's a pull request that was just opened
+    if (payload.action === 'opened' && payload.pull_request) {
+      const pr = payload.pull_request;
+      const taskTitle = `Code Review: ${pr.title}`;
+      const taskDescription = `Please review the pull request at: ${pr.html_url}\n\nDiff URL: ${pr.diff_url}`;
+
+      const supabase = createSupabaseClient(c.env);
+      const { data, error } = await supabase.from('tasks').insert({
+        title: taskTitle,
+        description: taskDescription,
+        priority: 'CRITICAL', // Code reviews are high priority
+        status: 'TODO',
+      }).select().single();
+
+      if (error) {
+        console.error('Error creating code review task:', error);
+        return c.json({ error: 'Could not create code review task' }, 500);
+      }
+
+      console.log('Created code review task:', data);
+    }
+
+    return c.json({ message: 'Webhook received' }, 202);
+  } catch (err) {
+    console.error('Error processing GitHub webhook:', err);
+    return c.json({ error: 'Failed to process webhook' }, 500);
+  }
+});
 
 // POST /api/tasks - Create a new task
 app.post('/api/tasks', async (c) => {
@@ -535,6 +639,25 @@ app.get('/api/analytics/service-usage', async (c) => {
   } catch (err) {
     console.error('Unexpected error fetching service usage:', err);
     return c.json({ error: 'Failed to fetch service usage analytics' }, 500);
+  }
+});
+
+// Performance Analysis: Flag Costly Tasks (can be called manually or via cron)
+app.post('/api/analytics/flag-costly-tasks', async (c) => {
+  try {
+    const supabase = createSupabaseClient(c.env);
+    
+    const { error } = await supabase.rpc('flag_costly_tasks');
+
+    if (error) {
+      console.error('Error flagging costly tasks:', error);
+      return c.json({ error: 'Could not flag costly tasks' }, 500);
+    }
+
+    return c.json({ message: 'Successfully flagged costly tasks for review' });
+  } catch (err) {
+    console.error('Unexpected error flagging costly tasks:', err);
+    return c.json({ error: 'Failed to flag costly tasks' }, 500);
   }
 });
 

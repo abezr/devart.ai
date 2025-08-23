@@ -263,3 +263,46 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 COMMENT ON FUNCTION match_knowledge IS 'Performs semantic search on knowledge base using cosine similarity. Returns matching content with similarity scores.';
+
+-- =====================================================
+-- Collaborative Agent Platform Extensions
+-- =====================================================
+
+-- Add a column for task chaining
+ALTER TABLE tasks
+  ADD COLUMN parent_task_id UUID REFERENCES tasks(id) ON DELETE SET NULL;
+
+COMMENT ON COLUMN tasks.parent_task_id IS 'The parent task that spawned this successor task.';
+CREATE INDEX idx_tasks_parent_task_id ON tasks(parent_task_id);
+
+-- Add a column for performance outlier flagging
+ALTER TABLE tasks
+  ADD COLUMN review_flag BOOLEAN DEFAULT FALSE;
+
+COMMENT ON COLUMN tasks.review_flag IS 'If true, this task is flagged for supervisor review due to performance outliers.';
+
+-- This function identifies tasks with costs above a certain threshold (e.g., 2 standard deviations)
+-- and flags them for review.
+CREATE OR REPLACE FUNCTION flag_costly_tasks()
+RETURNS void AS $$
+DECLARE
+  avg_cost NUMERIC;
+  stddev_cost NUMERIC;
+  threshold NUMERIC;
+BEGIN
+  -- Calculate the average and standard deviation of costs for completed tasks
+  SELECT AVG(total_cost), STDDEV(total_cost)
+  INTO avg_cost, stddev_cost
+  FROM task_cost_summary;
+
+  -- Set the threshold for flagging (e.g., average + 2 standard deviations)
+  threshold := avg_cost + (2 * stddev_cost);
+
+  -- Flag tasks that exceed the threshold and are not already flagged
+  UPDATE tasks
+  SET review_flag = TRUE
+  WHERE id IN (
+    SELECT task_id FROM task_cost_summary WHERE total_cost > threshold
+  ) AND review_flag = FALSE;
+END;
+$$ LANGUAGE plpgsql;

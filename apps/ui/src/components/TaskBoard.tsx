@@ -16,6 +16,8 @@ interface Task {
   agent_id: string | null;
   created_at: string;
   updated_at: string;
+  parent_task_id: string | null; // For task chaining
+  review_flag: boolean; // For performance outlier flagging
 }
 
 /**
@@ -150,20 +152,37 @@ export default function TaskBoard({ initialTasks }: TaskBoardProps) {
             </div>
           ) : (
             tasks.map((task) => (
-              // Add onClick handler and cursor style
+              // Add onClick handler and cursor style with conditional flagged styling
               <div
                 key={task.id}
                 onClick={() => setSelectedTaskId(task.id)}
-                className="bg-gray-700 p-4 rounded-md cursor-pointer hover:bg-gray-600 transition-colors"
+                className={`bg-gray-700 p-4 rounded-md cursor-pointer hover:bg-gray-600 transition-colors ${
+                  task.review_flag ? 'ring-2 ring-red-500' : ''
+                }`}
               >
                 <div className="flex justify-between items-start mb-2">
                   <div className="flex-1">
-                    <h3 className="font-semibold text-white">{task.title}</h3>
+                    <div className="flex items-center space-x-2">
+                      {task.review_flag && (
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-red-500" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.21 3.03-1.742 3.03H4.42c-1.532 0-2.492-1.696-1.742-3.03l5.58-9.92zM10 13a1 1 0 110-2 1 1 0 010 2zm-1-4a1 1 0 011-1h.01a1 1 0 110 2H10a1 1 0 01-1-1z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                      {task.parent_task_id && (
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M12.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-2.293-2.293a1 1 0 010-1.414z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                      <h3 className="font-semibold text-white">{task.title}</h3>
+                    </div>
                     {task.description && (
                       <p className="text-gray-300 text-sm mt-1">{task.description}</p>
                     )}
                     {task.agent_id && (
                       <p className="text-gray-400 text-xs mt-1">Agent: {task.agent_id}</p>
+                    )}
+                    {task.parent_task_id && (
+                      <p className="text-blue-400 text-xs mt-1">↳ Chained from parent task</p>
                     )}
                   </div>
                   <div className="flex flex-col items-end space-y-1 ml-4">
