@@ -22,11 +22,12 @@ const k8sBatchApi = kc.makeApiClient(k8s.BatchV1Api);
  * @returns Object containing containerId and connectionDetails
  */
 export async function provisionSandbox(taskId: string): Promise<{ containerId: string, connectionDetails: object }> {
-  const jobName = `sandbox-${taskId}`;
+  const jobName = `sandbox-${taskId.toLowerCase().substring(0, 8)}`;
   const namespace = process.env.K8S_NAMESPACE || 'default';
-  const containerImage = process.env.AGENT_CONTAINER_IMAGE || 'alpine:latest';
+  const containerImage = process.env.AGENT_CONTAINER_IMAGE || 'devart-agent:latest';
+  const agentId = process.env.AGENT_ID || 'devart-agent';
 
-  // Define the Job specification
+  // Define the Job specification with proper sandboxing
   const jobSpec: k8s.V1Job = {
     metadata: {
       name: jobName,
@@ -43,28 +44,49 @@ export async function provisionSandbox(taskId: string): Promise<{ containerId: s
             {
               name: 'agent-sandbox',
               image: containerImage,
-              // In a real implementation, you would configure the container
-              // with the necessary environment variables, volumes, etc.
+              // Configure the container with necessary environment variables
               env: [
                 {
                   name: 'TASK_ID',
                   value: taskId
+                },
+                {
+                  name: 'DEVART_AGENT_ID',
+                  value: agentId
+                },
+                {
+                  name: 'SANDBOX_MODE',
+                  value: 'true'
                 }
               ],
-              // Example resource limits
+              // Resource limits for sandboxing
               resources: {
                 limits: {
-                  cpu: '1',
-                  memory: '1Gi'
+                  cpu: process.env.SANDBOX_CPU_LIMIT || '1',
+                  memory: process.env.SANDBOX_MEMORY_LIMIT || '1Gi'
                 },
                 requests: {
-                  cpu: '500m',
-                  memory: '512Mi'
+                  cpu: process.env.SANDBOX_CPU_REQUEST || '500m',
+                  memory: process.env.SANDBOX_MEMORY_REQUEST || '512Mi'
                 }
+              },
+              // Security context for additional sandboxing
+              securityContext: {
+                readOnlyRootFilesystem: true,
+                runAsNonRoot: true,
+                runAsUser: 1000,
+                allowPrivilegeEscalation: false
               }
             }
           ],
-          restartPolicy: 'Never' // Jobs should not restart automatically
+          // Security context for the pod
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 1000
+          },
+          restartPolicy: 'Never', // Jobs should not restart automatically
+          // Service account for restricted permissions
+          serviceAccountName: process.env.SANDBOX_SERVICE_ACCOUNT || 'default'
         }
       }
     }
@@ -72,20 +94,17 @@ export async function provisionSandbox(taskId: string): Promise<{ containerId: s
 
   try {
     // Create the Job in the specified namespace
-    await k8sBatchApi.createNamespacedJob(namespace, jobSpec);
+    const createResponse = await k8sBatchApi.createNamespacedJob({
+      namespace: namespace,
+      body: jobSpec
+    });
     
-    // For connection details, in a real implementation you would:
-    // 1. Wait for the pod to be running
-    // 2. Extract the pod IP or service endpoint
-    // 3. Return connection information
+    // Wait for the pod to be running and get connection details
+    const connectionDetails = await waitForPodRunningAndGetConnectionDetails(jobName, namespace);
     
     return {
       containerId: jobName,
-      connectionDetails: {
-        // Placeholder connection details
-        host: 'localhost',
-        port: 2222
-      }
+      connectionDetails
     };
   } catch (error) {
     console.error('Failed to create Kubernetes Job:', error);
@@ -102,10 +121,14 @@ export async function terminateSandbox(containerId: string): Promise<void> {
 
   try {
     // Delete the Job (which will also delete associated pods)
-    await k8sBatchApi.deleteNamespacedJob(containerId, namespace, undefined, undefined, undefined, undefined, undefined, {
-      propagationPolicy: 'Foreground' // Ensure all child resources are deleted
+    await k8sBatchApi.deleteNamespacedJob({
+      name: containerId,
+      namespace: namespace,
+      body: {
+        propagationPolicy: 'Foreground' // Ensure all child resources are deleted
+      }
     });
-  } catch (error) {
+  } catch (error: any) {
     // If the job doesn't exist, that's fine - it may have already been cleaned up
     if (error && error.response && error.response.statusCode !== 404) {
       console.error('Failed to delete Kubernetes Job:', error);
@@ -123,7 +146,10 @@ export async function getSandboxStatus(containerId: string): Promise<string> {
   const namespace = process.env.K8S_NAMESPACE || 'default';
 
   try {
-    const response = await k8sBatchApi.readNamespacedJob(containerId, namespace);
+    const response: any = await k8sBatchApi.readNamespacedJob({
+      name: containerId,
+      namespace: namespace
+    });
     const job = response.body;
     
     // Check if the job is complete
@@ -134,11 +160,61 @@ export async function getSandboxStatus(containerId: string): Promise<string> {
     } else {
       return 'RUNNING';
     }
-  } catch (error) {
+  } catch (error: any) {
     if (error && error.response && error.response.statusCode === 404) {
       return 'NOT_FOUND';
     }
     console.error('Failed to get Kubernetes Job status:', error);
     throw new Error(`Failed to get sandbox status for ${containerId}: ${error}`);
   }
+}
+
+/**
+ * Wait for a pod to be running and get connection details
+ * @param jobName The name of the job
+ * @param namespace The namespace of the job
+ * @returns Connection details for the pod
+ */
+async function waitForPodRunningAndGetConnectionDetails(jobName: string, namespace: string): Promise<object> {
+  const maxAttempts = 30;
+  const interval = 2000; // 2 seconds
+  
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      // List pods associated with the job
+      const podListResponse: any = await k8sApi.listNamespacedPod({
+        namespace: namespace,
+        labelSelector: `job-name=${jobName}`
+      });
+      
+      const pods = podListResponse.body.items;
+      
+      if (pods.length > 0) {
+        const pod = pods[0];
+        const phase = pod.status?.phase;
+        
+        if (phase === 'Running') {
+          // Pod is running, return connection details
+          return {
+            podName: pod.metadata?.name,
+            podIP: pod.status?.podIP,
+            host: pod.status?.podIP || 'localhost',
+            port: 2222 // Default port, can be configured
+          };
+        }
+        
+        if (phase === 'Failed' || phase === 'Unknown') {
+          throw new Error(`Pod entered failed state: ${phase}`);
+        }
+      }
+      
+      // Wait before checking again
+      await new Promise(resolve => setTimeout(resolve, interval));
+    } catch (error) {
+      console.error(`Error checking pod status (attempt ${attempt + 1}):`, error);
+      throw error;
+    }
+  }
+  
+  throw new Error('Pod failed to reach Running state within timeout');
 }

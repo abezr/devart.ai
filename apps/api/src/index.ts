@@ -746,11 +746,16 @@ app.post('/api/tasks/:taskId/report-failure', async (c) => {
 
   if (updateError) return c.json({ error: 'Failed to update task status.' }, 500);
   
-  // 4. If the task is being re-queued, republish it to RabbitMQ with a delay
+  // 4. If the task is being re-queued, republish it to RabbitMQ with exponential backoff delay
   if (nextStatus === 'TODO') {
     try {
-      // Republish with a 5-second delay (this could be configurable)
-      await republishTaskWithDelay(taskId, 5000);
+      // Calculate exponential backoff delay: baseDelay * 2^retryCount
+      const baseDelay = 5000; // 5 seconds base delay
+      const delayMs = baseDelay * Math.pow(2, task.retry_count);
+      const maxDelay = 300000; // Maximum 5 minutes delay
+      const finalDelay = Math.min(delayMs, maxDelay);
+      
+      await republishTaskWithDelay(taskId, finalDelay);
     } catch (publishError) {
       console.error('Failed to republish task to RabbitMQ:', publishError);
       // Don't fail the request if RabbitMQ publishing fails, just log it

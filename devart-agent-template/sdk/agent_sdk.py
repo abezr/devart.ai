@@ -4,6 +4,7 @@ import time
 import pika
 import json
 import threading
+from typing import Callable, Dict, Any
 
 class AgentSDK:
     def __init__(self, agent_id: str, api_key: str, api_base_url: str):
@@ -29,12 +30,12 @@ class AgentSDK:
             queue_name = os.getenv('RABBITMQ_TASKS_QUEUE', 'tasks.todo')
             self.rabbitmq_channel.queue_declare(queue=queue_name, durable=True)
 
-    def start_consuming(self, callback):
+    def start_consuming(self, callback: Callable[[Dict[str, Any]], bool]):
         """
         Start consuming tasks from the RabbitMQ queue.
         
         Args:
-            callback: A function that takes a task dictionary as an argument
+            callback: A function that takes a task dictionary as an argument and returns a boolean indicating success
         """
         self._connect_to_rabbitmq()
         
@@ -66,7 +67,8 @@ class AgentSDK:
                                     routing_key=method.routing_key,
                                     body=body,
                                     properties=pika.BasicProperties(
-                                        headers={'x-delay': remaining_delay}
+                                        headers={'x-delay': remaining_delay},
+                                        delivery_mode=2  # Make message persistent
                                     )
                                 )
                                 channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
@@ -79,37 +81,56 @@ class AgentSDK:
                     task = self.get_task_details(task_id)
                     if task:
                         # Call the user's callback function with the task
-                        callback(task)
+                        success = callback(task)
                         
-                    # Acknowledge the message
-                    channel.basic_ack(delivery_tag=method.delivery_tag)
+                        if success:
+                            # Acknowledge the message if processing was successful
+                            channel.basic_ack(delivery_tag=method.delivery_tag)
+                        else:
+                            # Reject and requeue the message if processing failed
+                            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                    else:
+                        # If we couldn't get task details, reject and requeue
+                        print(f"Could not get details for task {task_id}")
+                        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
                 except Exception as e:
                     print(f"Error processing message: {e}")
                     # Reject and requeue the message
                     channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             
             queue_name = os.getenv('RABBITMQ_TASKS_QUEUE', 'tasks.todo')
+            self.rabbitmq_channel.basic_qos(prefetch_count=1)  # Process one message at a time
             self.rabbitmq_channel.basic_consume(queue=queue_name, on_message_callback=on_message)
             
             try:
                 self.rabbitmq_channel.start_consuming()
-            except KeyboardInterrupt:
-                self.rabbitmq_channel.stop_consuming()
-                self.rabbitmq_connection.close()
+            except Exception as e:
+                if self.running:  # Only log if we weren't intentionally stopping
+                    print(f"Error in consumer: {e}")
+            finally:
+                if self.rabbitmq_connection and self.rabbitmq_connection.is_open:
+                    self.rabbitmq_connection.close()
 
         # Start consuming in a separate thread
-        self.consumer_thread = threading.Thread(target=consume)
+        self.consumer_thread = threading.Thread(target=consume, daemon=True)
         self.consumer_thread.start()
 
     def stop_consuming(self):
         """Stop consuming tasks from the RabbitMQ queue."""
+        print("Stopping consumer...")
         self.running = False
         if self.rabbitmq_channel and self.rabbitmq_channel.is_open:
-            self.rabbitmq_channel.stop_consuming()
+            try:
+                self.rabbitmq_channel.stop_consuming()
+            except Exception as e:
+                print(f"Error stopping consumer: {e}")
         if self.rabbitmq_connection and self.rabbitmq_connection.is_open:
-            self.rabbitmq_connection.close()
+            try:
+                self.rabbitmq_connection.close()
+            except Exception as e:
+                print(f"Error closing connection: {e}")
         if self.consumer_thread:
-            self.consumer_thread.join()
+            self.consumer_thread.join(timeout=5)  # Wait up to 5 seconds for thread to finish
 
     def get_task_details(self, task_id: str):
         """Get the full details of a task by ID."""
@@ -119,7 +140,7 @@ class AgentSDK:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Error fetching task details: {response.status_code}")
+                print(f"Error fetching task details: {response.status_code} - {response.text}")
                 return None
         except requests.RequestException as e:
             print(f"Error fetching task details: {e}")

@@ -11,11 +11,42 @@ async function getRabbitMQConnection() {
   if (!connection || !channel) {
     const rabbitmqUrl = process.env.RABBITMQ_URL || 'amqp://localhost';
     connection = await amqp.connect(rabbitmqUrl);
+    
+    // Handle connection errors
+    connection.on('error', (err: any) => {
+      console.error('RabbitMQ connection error:', err);
+      connection = null;
+      channel = null;
+    });
+    
+    connection.on('close', () => {
+      console.log('RabbitMQ connection closed');
+      connection = null;
+      channel = null;
+    });
+    
     channel = await connection.createChannel();
     
-    // Assert the tasks queue to ensure it exists
+    // Assert the main tasks queue
     const queueName = process.env.RABBITMQ_TASKS_QUEUE || 'tasks.todo';
-    await channel.assertQueue(queueName, { durable: true });
+    await channel.assertQueue(queueName, { 
+      durable: true,
+      deadLetterExchange: 'tasks.dlx' // Dead letter exchange for failed messages
+    });
+    
+    // Assert delayed message exchange if using the plugin
+    if (process.env.RABBITMQ_DELAYED_EXCHANGE === 'true') {
+      await channel.assertExchange('tasks.delayed', 'x-delayed-message', {
+        durable: true,
+        arguments: { 'x-delayed-type': 'direct' }
+      });
+      
+      // Bind the delayed exchange to the main queue
+      await channel.bindQueue(queueName, 'tasks.delayed', 'task');
+    }
+    
+    // Assert dead letter queue
+    await channel.assertQueue('tasks.dead-letter', { durable: true });
   }
   
   return { connection, channel };
@@ -50,24 +81,29 @@ export async function publishTask(taskId: string): Promise<void> {
 export async function republishTaskWithDelay(taskId: string, delayMs: number = 5000): Promise<void> {
   try {
     const { channel } = await getRabbitMQConnection();
-    const queueName = process.env.RABBITMQ_TASKS_QUEUE || 'tasks.todo';
     
-    // For delayed messaging, we would typically use RabbitMQ's delayed message exchange plugin
-    // For simplicity in this implementation, we'll just publish the task with a timestamp
-    // and let the consumer handle the delay logic
-    const message = JSON.stringify({
-      taskId,
-      delayUntil: Date.now() + delayMs
-    });
+    if (process.env.RABBITMQ_DELAYED_EXCHANGE === 'true') {
+      // Use delayed message exchange plugin
+      channel.publish('tasks.delayed', 'task', Buffer.from(taskId), {
+        persistent: true,
+        headers: {
+          'x-delay': delayMs
+        }
+      });
+    } else {
+      // Fallback to simple delayed republishing
+      const message = JSON.stringify({
+        taskId,
+        delayUntil: Date.now() + delayMs
+      });
+      
+      const queueName = process.env.RABBITMQ_TASKS_QUEUE || 'tasks.todo';
+      channel.sendToQueue(queueName, Buffer.from(message), {
+        persistent: true
+      });
+    }
     
-    channel.sendToQueue(queueName, Buffer.from(message), {
-      persistent: true,
-      headers: {
-        'x-delay': delayMs // This would work with the delayed message exchange plugin
-      }
-    });
-    
-    console.log(`Republished task ${taskId} to queue ${queueName} with delay ${delayMs}ms`);
+    console.log(`Republished task ${taskId} with delay ${delayMs}ms`);
   } catch (error) {
     console.error('Failed to republish task to RabbitMQ:', error);
     throw new Error(`Failed to republish task ${taskId} to RabbitMQ: ${error}`);
