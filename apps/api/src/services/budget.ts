@@ -35,7 +35,8 @@ export async function checkAndChargeService(
     if (error) {
       console.error('RPC Error charging service:', error);
       return { 
-        serviceToUse: null, 
+        serviceToUse: null,
+        wasSuspended: false,
         error: 'Database transaction failed: ' + error.message 
       };
     }
@@ -43,24 +44,39 @@ export async function checkAndChargeService(
     if (!data) {
       console.warn(`Service ${serviceId} not found or budget exceeded with no substitutor`);
       return { 
-        serviceToUse: null, 
+        serviceToUse: null,
+        wasSuspended: false,
         error: `Service '${serviceId}' not found or budget exceeded.` 
       };
     }
 
-    // The RPC function returns the service that should be used
-    const serviceToUse = data as Service;
-    console.log(`Budget check successful: Using service ${serviceToUse.id}`);
+    // The RPC function now returns a JSON object with serviceToUse and wasSuspended
+    const { serviceToUse, wasSuspended, error: procedureError } = data;
+
+    if (procedureError) {
+      console.error('Procedure error:', procedureError);
+      return {
+        serviceToUse: null,
+        wasSuspended: false,
+        error: procedureError
+      };
+    }
+
+    if (serviceToUse) {
+      console.log(`Budget check successful: Using service ${serviceToUse.id}`);
+    }
     
     return { 
-      serviceToUse, 
+      serviceToUse: serviceToUse as Service | null, 
+      wasSuspended: wasSuspended || false,
       error: null 
     };
 
   } catch (err) {
     console.error('Unexpected error in checkAndChargeService:', err);
     return { 
-      serviceToUse: null, 
+      serviceToUse: null,
+      wasSuspended: false,
       error: 'Unexpected error during budget check.' 
     };
   }

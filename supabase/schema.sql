@@ -51,17 +51,23 @@ INSERT INTO tasks (title, description) VALUES
 -- Budget Supervisor Core Function
 -- This function atomically checks budget, updates usage, and handles suspension.
 -- It prevents race conditions when multiple requests charge the same service simultaneously.
+-- Enhanced to return suspension status for notification triggers.
+
+-- Drop the old function signature first
+DROP FUNCTION IF EXISTS charge_service(TEXT, NUMERIC);
+
 CREATE OR REPLACE FUNCTION charge_service(service_id_to_charge TEXT, charge_amount NUMERIC)
-RETURNS service_registry AS $$
+RETURNS JSONB AS $$
 DECLARE
   service RECORD;
   substitutor_service RECORD;
+  was_suspended BOOLEAN := FALSE;
 BEGIN
   -- Lock the row for this transaction to prevent race conditions
   SELECT * INTO service FROM service_registry WHERE id = service_id_to_charge FOR UPDATE;
 
   IF service IS NULL THEN
-    RETURN NULL; -- Service not found
+    RETURN jsonb_build_object('error', 'Service not found');
   END IF;
 
   -- Check if service should be suspended (budget exceeded or already suspended)
@@ -69,18 +75,18 @@ BEGIN
     -- Mark as suspended if not already
     IF service.status = 'ACTIVE' THEN
       UPDATE service_registry SET status = 'SUSPENDED' WHERE id = service_id_to_charge;
-      -- NOTE: In a real system, you would trigger a notification here
+      was_suspended := TRUE;
     END IF;
 
     -- Check for a substitutor service
     IF service.substitutor_service_id IS NOT NULL THEN
       SELECT * INTO substitutor_service FROM service_registry WHERE id = service.substitutor_service_id;
       IF substitutor_service IS NOT NULL AND substitutor_service.status = 'ACTIVE' THEN
-        RETURN substitutor_service;
+        RETURN jsonb_build_object('serviceToUse', row_to_json(substitutor_service), 'wasSuspended', was_suspended);
       END IF;
     END IF;
     
-    RETURN NULL; -- No budget and no valid substitutor
+    RETURN jsonb_build_object('serviceToUse', NULL, 'wasSuspended', was_suspended);
   ELSE
     -- Budget is OK, update usage and return the original service
     UPDATE service_registry
@@ -89,7 +95,7 @@ BEGIN
     
     -- Re-fetch the service to return the updated state
     SELECT * INTO service FROM service_registry WHERE id = service_id_to_charge;
-    RETURN service;
+    RETURN jsonb_build_object('serviceToUse', row_to_json(service), 'wasSuspended', FALSE);
   END IF;
 END;
 $$ LANGUAGE plpgsql;

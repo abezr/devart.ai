@@ -35,5 +35,6 @@ export interface Subscription {
 // Type for the Budget Supervisor response
 export interface BudgetCheckResult {
   serviceToUse: Service | null;
+  wasSuspended: boolean;
   error: string | null;
 }

@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import TaskBoard from '../components/TaskBoard';
+import ServiceStatusPanel from '../components/ServiceStatusPanel';
 
 /**
  * Interface matching the Task database table structure
@@ -13,6 +14,20 @@ interface Task {
   agent_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * Interface matching the Service database table structure
+ */
+interface Service {
+  id: string;
+  display_name: string;
+  api_endpoint: string;
+  monthly_budget_usd: number;
+  current_usage_usd: number;
+  status: 'ACTIVE' | 'SUSPENDED';
+  substitutor_service_id: string | null;
+  created_at: string;
 }
 
 /**
@@ -45,8 +60,37 @@ async function getInitialTasks(): Promise<Task[]> {
   }
 }
 
+/**
+ * Fetches initial services on the server for SEO and performance
+ * This runs during server-side rendering and provides initial data
+ */
+async function getInitialServices(): Promise<Service[]> {
+  try {
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+    
+    const { data, error } = await supabase
+      .from('service_registry')
+      .select('*')
+      .order('created_at', { ascending: true });
+    
+    if (error) {
+      console.error('Error fetching initial services:', error);
+      return [];
+    }
+    
+    return data || [];
+  } catch (err) {
+    console.error('Unexpected error fetching initial services:', err);
+    return [];
+  }
+}
+
 export default async function HomePage() {
   const initialTasks = await getInitialTasks();
+  const initialServices = await getInitialServices(); // Fetch services
 
 
 
@@ -64,25 +108,7 @@ export default async function HomePage() {
         </div>
 
         {/* Service Status Column */}
-        <div className="bg-gray-800 p-6 rounded-lg">
-          <h2 className="text-2xl font-semibold mb-4">Service Status</h2>
-          <div className="space-y-4">
-            <div className="bg-gray-700 p-4 rounded-md">
-              <h3 className="font-semibold">Premium LLM (GPT-4)</h3>
-              <p className="text-sm text-gray-400">Budget: $5.20 / $50.00</p>
-              <div className="w-full bg-gray-600 rounded-full h-2.5 mt-2">
-                <div className="bg-green-600 h-2.5 rounded-full" style={{ width: '10.4%' }}></div>
-              </div>
-            </div>
-             <div className="bg-gray-700 p-4 rounded-md">
-              <h3 className="font-semibold">Free LLM (Groq)</h3>
-              <p className="text-sm text-gray-400">Status: Active</p>
-              <div className="w-full bg-gray-600 rounded-full h-2.5 mt-2">
-                <div className="bg-green-600 h-2.5 rounded-full" style={{ width: '100%' }}></div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ServiceStatusPanel initialServices={initialServices} />
       </div>
     </main>
   );

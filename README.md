@@ -7,12 +7,14 @@ This project is built on a modern, free-tier-friendly stack designed for rapid d
 ## ✨ Features
 
 -   **Live Dashboard:** Real-time status of agents, tasks, and quality metrics.
+-   **Human-Loop Supervisor:** Interactive budget management with real-time controls and proactive alerting.
 -   **Budget Supervisor:** Enforce spending limits on external services (e.g., LLM APIs), suspend usage, and require manual approval for increases.
+-   **Real-time Service Panel:** Live monitoring of service statuses with budget increase controls.
+-   **Telegram Notifications:** Automated alerts for service suspensions and budget exceeded events.
 -   **Pluggable Services:** A control plane/execution plane architecture that allows you to use services from any cloud provider's free tier.
 -   **Quality Gate:** Automatically handle CI/CD results and trigger agent-led regression fixes.
 -   **Quarantine Queue:** Isolate tasks that require manual human intervention.
 -   **Dynamic Prompts:** Manage and tune agent prompts from a central location.
--   **Telegram Notifications:** Subscribe to critical events like budget warnings and build failures.
 
 ## 🏛️ Architecture Overview
 
@@ -108,7 +110,21 @@ pnpm dev
    wrangler secret put SUPABASE_SERVICE_KEY
    # (Paste your Supabase service_role key when prompted)
    ```
-3. Deploy the worker:
+
+3. **Optional: Set up Telegram notifications for service suspension alerts:**
+   - Create a bot via [@BotFather](https://t.me/BotFather) on Telegram
+   - Get your bot token from BotFather
+   - Get your chat ID by messaging your bot and using the Telegram API
+   - Set the Telegram secrets:
+   ```bash
+   wrangler secret put TELEGRAM_BOT_TOKEN
+   # (Paste your bot token when prompted)
+
+   wrangler secret put TELEGRAM_CHAT_ID
+   # (Paste your chat ID when prompted)
+   ```
+
+4. Deploy the worker:
    ```bash
    pnpm deploy
    ```
@@ -129,6 +145,33 @@ pnpm dev
 6. Click **Save and Deploy**. Cloudflare will build and deploy your site.
 
 You now have a live, globally distributed application!
+
+## 🎯 Human-Loop Supervisor Features
+
+The Human-Loop Supervisor transforms the autonomous budget system into an interactive management tool:
+
+### Real-time Service Dashboard
+- **Live Status Monitoring:** See current usage vs. budget limits in real-time
+- **Visual Status Indicators:** Green borders for active services, red for suspended
+- **Budget Controls:** Click "+ Budget" to increase service budgets and reactivate suspended services
+- **Automatic Updates:** UI refreshes instantly via Supabase real-time subscriptions
+
+### Proactive Telegram Alerts
+- **Automatic Notifications:** Receive instant alerts when services are suspended due to budget exhaustion
+- **Markdown Formatting:** Clear, readable notifications with service details
+- **Non-blocking:** Notifications don't interrupt the core budget supervisor functionality
+
+### Budget Management API
+- **GET /api/services:** Retrieve all services with current status and usage
+- **POST /api/services/:id/increase-budget:** Increase budget and automatically reactivate suspended services
+- **Atomic Operations:** All budget changes use PostgreSQL functions to prevent race conditions
+- **Input Validation:** Ensures only positive budget increases are accepted
+
+### Usage Example
+1. Service exceeds budget → Automatically suspended → Telegram alert sent
+2. Tech Lead opens dashboard → Sees red indicator for suspended service
+3. Clicks "+ Budget" → Enters increase amount → Service immediately reactivated
+4. Real-time UI updates show green status → Ready for continued operation
 
 ## 📂 Project Structure
 
