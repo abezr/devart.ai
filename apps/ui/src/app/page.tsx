@@ -4,6 +4,8 @@ import ServiceStatusPanel from '../components/ServiceStatusPanel';
 import CreateTaskForm from '../components/CreateTaskForm';
 import AgentMonitoringPanel from '../components/AgentMonitoringPanel';
 import TaskAnalyticsPanel from '../components/TaskAnalyticsPanel';
+import AgentRegistrationPanel from '../components/AgentRegistrationPanel';
+import SettingsPanel from '../components/SettingsPanel';
 
 /**
  * Interface matching the Task database table structure
@@ -41,6 +43,7 @@ interface Agent {
   alias: string;
   status: 'IDLE' | 'BUSY';
   capabilities: string[];
+  is_active: boolean;
   last_seen: string;
   created_at: string;
 }
@@ -150,11 +153,20 @@ export default async function HomePage() {
           <TaskBoard initialTasks={initialTasks} />
         </div>
 
-        {/* Right Column - Monitoring Panels */}
+        {/* Right Column - Monitoring & Management Panels */}
         <div className="space-y-8">
           <ServiceStatusPanel initialServices={initialServices} />
           <AgentMonitoringPanel initialAgents={initialAgents} />
           <TaskAnalyticsPanel />
+        </div>
+      </div>
+
+      {/* Enterprise Governance Section */}
+      <div className="mt-12">
+        <h2 className="text-3xl font-bold mb-6">Enterprise Governance</h2>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <AgentRegistrationPanel />
+          <SettingsPanel />
         </div>
       </div>
     </main>

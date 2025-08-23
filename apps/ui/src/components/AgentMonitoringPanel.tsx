@@ -8,6 +8,7 @@ interface Agent {
   alias: string;
   status: 'IDLE' | 'BUSY';
   capabilities: string[];
+  is_active: boolean;
   last_seen: string;
   created_at: string;
 }
@@ -34,6 +35,24 @@ interface AgentMonitoringPanelProps {
 
 export default function AgentMonitoringPanel({ initialAgents }: AgentMonitoringPanelProps) {
   const [agents, setAgents] = useState<Agent[]>(initialAgents);
+
+  // Handler for toggling agent activation
+  const handleToggleActivation = async (agent: Agent) => {
+    try {
+      const response = await fetch(`/api/agents/${agent.id}/activation`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: !agent.is_active }),
+      });
+      
+      if (!response.ok) {
+        console.error('Failed to toggle agent activation');
+      }
+      // Real-time subscription will handle the UI update automatically
+    } catch (error) {
+      console.error('Error toggling agent activation:', error);
+    }
+  };
 
   useEffect(() => {
     const channel = supabase
@@ -64,16 +83,37 @@ export default function AgentMonitoringPanel({ initialAgents }: AgentMonitoringP
           <p className="text-gray-400 text-center py-4">No agents registered yet</p>
         ) : (
           agents.map(agent => (
-            <div key={agent.id} className="bg-gray-700 p-3 rounded-md">
-              <div className="flex justify-between items-center">
-                <p className="font-semibold text-white">{agent.alias}</p>
-                <span className={`px-2 py-1 text-xs font-bold rounded-full ${
-                  agent.status === 'BUSY' ? 'bg-yellow-500 text-black' : 'bg-green-500 text-black'
-                }`}>
-                  {agent.status}
-                </span>
+            <div key={agent.id} className={`p-3 rounded-md ${
+              agent.is_active ? 'bg-gray-700' : 'bg-gray-800 border-2 border-gray-600'
+            }`}>
+              <div className="flex justify-between items-center mb-2">
+                <div className="flex items-center space-x-2">
+                  <p className="font-semibold text-white">{agent.alias}</p>
+                  {!agent.is_active && (
+                    <span className="px-2 py-1 text-xs font-bold rounded-full bg-red-500 text-white">
+                      INACTIVE
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center space-x-3">
+                  <span className={`px-2 py-1 text-xs font-bold rounded-full ${
+                    agent.status === 'BUSY' ? 'bg-yellow-500 text-black' : 'bg-green-500 text-black'
+                  }`}>
+                    {agent.status}
+                  </span>
+                  {/* Activation Toggle Switch */}
+                  <label className="inline-flex items-center cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={agent.is_active} 
+                      onChange={() => handleToggleActivation(agent)} 
+                      className="sr-only peer" 
+                    />
+                    <div className="relative w-11 h-6 bg-gray-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
+                  </label>
+                </div>
               </div>
-              <p className="text-xs text-gray-400 mt-1">
+              <p className="text-xs text-gray-400">
                 Last seen: {timeAgo(agent.last_seen)}
               </p>
               {agent.capabilities && agent.capabilities.length > 0 && (

@@ -386,7 +386,35 @@ app.post('/api/tasks/dispatch', async (c) => {
   });
 });
 
-// Orchestration Engine: Agent Registration Endpoint
+// =====================================================
+// Enterprise Agent Management Endpoints
+// =====================================================
+
+// Helper function to hash API keys using Web Crypto API
+async function hashApiKey(apiKey: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(apiKey);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// Helper function to verify agent API key
+async function verifyAgentApiKey(apiKey: string, supabase: any): Promise<any> {
+  const hashedKey = await hashApiKey(apiKey);
+  
+  const { data: agent, error } = await supabase
+    .from('agents')
+    .select('*')
+    .eq('api_key_hash', hashedKey)
+    .eq('is_active', true)
+    .single();
+    
+  return error ? null : agent;
+}
+
+// Secure Agent Registration Endpoint (for supervisors)
 app.post('/api/agents/register', async (c) => {
   const { alias, capabilities } = await c.req.json<{ alias: string; capabilities?: string[] }>();
 
@@ -394,40 +422,79 @@ app.post('/api/agents/register', async (c) => {
     return c.json({ error: 'Agent alias is required' }, 400);
   }
 
+  // 1. Generate a secure, random API key
+  const apiKey = `da_agent_${crypto.randomUUID()}`;
+  
+  // 2. Hash the API key for secure storage
+  const apiKeyHash = await hashApiKey(apiKey);
+
   const supabase = createSupabaseClient(c.env);
 
-  // Register the agent in the agents table
+  // 3. Register the agent with the hashed key
   const { data: newAgent, error } = await supabase
     .from('agents')
     .insert({
       alias,
       capabilities: capabilities || [],
+      api_key_hash: apiKeyHash,
+      is_active: true,
       status: 'IDLE',
       last_seen: new Date().toISOString()
     })
-    .select()
+    .select('id, alias, capabilities, is_active, created_at')
     .single();
 
   if (error) {
     console.error('Error registering agent:', error);
     if (error.code === '23505') { // Unique constraint violation
-      return c.json({ error: 'Agent alias already exists' }, 409);
+      return c.json({ error: 'Could not register agent. Alias may be taken.' }, 500);
     }
-    return c.json({ error: 'Failed to register agent' }, 500);
+    return c.json({ error: 'Could not register agent. Alias may be taken.' }, 500);
   }
 
-  return c.json(newAgent);
+  // 4. Return the plaintext key ONCE - it will not be stored
+  return c.json({ ...newAgent, apiKey });
 });
 
-// Orchestration Engine: Agent Heartbeat Endpoint
-app.put('/api/agents/:agentId/heartbeat', async (c) => {
+// Agent Activation Management Endpoint
+app.put('/api/agents/:agentId/activation', async (c) => {
   const agentId = c.req.param('agentId');
+  const { isActive } = await c.req.json<{ isActive: boolean }>();
 
-  if (!agentId) {
-    return c.json({ error: 'Agent ID is required' }, 400);
+  if (typeof isActive !== 'boolean') {
+    return c.json({ error: 'isActive must be a boolean value' }, 400);
   }
 
   const supabase = createSupabaseClient(c.env);
+  const { data, error } = await supabase
+    .from('agents')
+    .update({ is_active: isActive })
+    .eq('id', agentId)
+    .select()
+    .single();
+
+  if (error) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+  
+  return c.json(data);
+});
+
+// Orchestration Engine: Agent Heartbeat Endpoint (with API key auth)
+app.put('/api/agents/heartbeat', async (c) => {
+  const { agentId, apiKey } = await c.req.json<{ agentId: string; apiKey: string }>();
+
+  if (!agentId || !apiKey) {
+    return c.json({ error: 'Agent ID and API key are required' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+
+  // Verify the API key
+  const agent = await verifyAgentApiKey(apiKey, supabase);
+  if (!agent || agent.id !== agentId) {
+    return c.json({ error: 'Invalid API key or agent not active' }, 401);
+  }
 
   // Update the agent's last_seen timestamp
   const { data: updatedAgent, error } = await supabase
@@ -444,15 +511,21 @@ app.put('/api/agents/:agentId/heartbeat', async (c) => {
   return c.json({ message: 'Heartbeat updated successfully' });
 });
 
-// Orchestration Engine: Agent Task Claiming Endpoint
-app.post('/api/agents/:agentId/claim-task', async (c) => {
-  const agentId = c.req.param('agentId');
+// Orchestration Engine: Agent Task Claiming Endpoint (with API key auth)
+app.post('/api/agents/claim-task', async (c) => {
+  const { agentId, apiKey } = await c.req.json<{ agentId: string; apiKey: string }>();
 
-  if (!agentId) {
-    return c.json({ error: 'Agent ID is required' }, 400);
+  if (!agentId || !apiKey) {
+    return c.json({ error: 'Agent ID and API key are required' }, 400);
   }
 
   const supabase = createSupabaseClient(c.env);
+
+  // Verify the API key
+  const agent = await verifyAgentApiKey(apiKey, supabase);
+  if (!agent || agent.id !== agentId) {
+    return c.json({ error: 'Invalid API key or agent not active' }, 401);
+  }
 
   const { data: claimedTask, error } = await supabase.rpc('claim_next_task', {
     requesting_agent_id: agentId,
@@ -470,17 +543,23 @@ app.post('/api/agents/:agentId/claim-task', async (c) => {
   return c.json(claimedTask);
 });
 
-// Orchestration Engine: Task Status Update Endpoint
+// Orchestration Engine: Task Status Update Endpoint (with API key auth)
 app.put('/api/tasks/:taskId/status', async (c) => {
   const taskId = c.req.param('taskId');
-  const { agentId, newStatus } = await c.req.json<{ agentId: string; newStatus: string }>();
+  const { agentId, apiKey, newStatus } = await c.req.json<{ agentId: string; apiKey: string; newStatus: string }>();
 
   const validStatuses = ['DONE', 'QUARANTINED', 'IN_PROGRESS']; // Example valid statuses
-  if (!agentId || !newStatus || !validStatuses.includes(newStatus)) {
-    return c.json({ error: 'Missing or invalid agentId or newStatus' }, 400);
+  if (!agentId || !apiKey || !newStatus || !validStatuses.includes(newStatus)) {
+    return c.json({ error: 'Missing or invalid agentId, apiKey, or newStatus' }, 400);
   }
 
   const supabase = createSupabaseClient(c.env);
+
+  // Verify the API key
+  const agent = await verifyAgentApiKey(apiKey, supabase);
+  if (!agent || agent.id !== agentId) {
+    return c.json({ error: 'Invalid API key or agent not active' }, 401);
+  }
 
   // 1. Atomically update the task status, ONLY if the agentId matches.
   const { data: updatedTask, error: updateError } = await supabase
@@ -509,6 +588,85 @@ app.put('/api/tasks/:taskId/status', async (c) => {
   }
 
   return c.json(updatedTask);
+});
+
+// =====================================================
+// System Configuration Management Endpoints
+// =====================================================
+
+// GET /api/settings/:key - Get a specific setting value
+app.get('/api/settings/:key', async (c) => {
+  try {
+    const key = c.req.param('key');
+    const supabase = createSupabaseClient(c.env);
+    
+    const { data, error } = await supabase
+      .from('system_settings')
+      .select('value, description')
+      .eq('key', key)
+      .single();
+      
+    if (error) {
+      return c.json({ error: 'Setting not found' }, 404);
+    }
+    
+    return c.json(data);
+  } catch (err) {
+    console.error('Error fetching setting:', err);
+    return c.json({ error: 'Failed to fetch setting' }, 500);
+  }
+});
+
+// PUT /api/settings/:key - Update a specific setting value
+app.put('/api/settings/:key', async (c) => {
+  try {
+    const key = c.req.param('key');
+    const { value } = await c.req.json<{ value: any }>();
+    
+    if (value === undefined || value === null) {
+      return c.json({ error: 'Value is required' }, 400);
+    }
+    
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase
+      .from('system_settings')
+      .update({ 
+        value, 
+        updated_at: new Date().toISOString() 
+      })
+      .eq('key', key)
+      .select()
+      .single();
+      
+    if (error) {
+      return c.json({ error: 'Setting not found or could not be updated' }, 404);
+    }
+    
+    return c.json(data);
+  } catch (err) {
+    console.error('Error updating setting:', err);
+    return c.json({ error: 'Failed to update setting' }, 500);
+  }
+});
+
+// GET /api/settings - Get all settings
+app.get('/api/settings', async (c) => {
+  try {
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase
+      .from('system_settings')
+      .select('*')
+      .order('key');
+      
+    if (error) {
+      return c.json({ error: 'Failed to fetch settings' }, 500);
+    }
+    
+    return c.json(data || []);
+  } catch (err) {
+    console.error('Error fetching settings:', err);
+    return c.json({ error: 'Failed to fetch settings' }, 500);
+  }
 });
 
 // =====================================================

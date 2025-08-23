@@ -1,3 +1,35 @@
+-- =====================================================
+-- Enterprise Governance Layer - Role-Based Access Control (RBAC)
+-- =====================================================
+
+-- Application Role Enumeration
+-- Defines the three access levels for the platform.
+CREATE TYPE app_role AS ENUM ('admin', 'supervisor', 'viewer');
+
+-- User Roles Table
+-- Links authenticated users to their application-specific role.
+CREATE TABLE user_roles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  role app_role NOT NULL DEFAULT 'viewer'
+);
+
+COMMENT ON TABLE user_roles IS 'Stores application-specific roles for authenticated users.';
+COMMENT ON COLUMN user_roles.role IS 'The application role: admin (full access), supervisor (task/agent management), viewer (read-only)';
+
+-- Helper function to get the current user's role
+-- This function uses SECURITY DEFINER to run with elevated permissions
+CREATE OR REPLACE FUNCTION get_my_role()
+RETURNS app_role AS $$
+DECLARE
+  user_role app_role;
+BEGIN
+  SELECT role INTO user_role FROM user_roles WHERE id = auth.uid();
+  RETURN COALESCE(user_role, 'viewer'::app_role);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+COMMENT ON FUNCTION get_my_role IS 'Returns the current authenticated user\'s application role. Defaults to viewer if no role is assigned.';
+
 -- Service Registry for Budget Control
 -- This table holds all pluggable services, their budgets, and current status.
 CREATE TABLE service_registry (
@@ -18,6 +50,8 @@ CREATE TABLE agents (
   alias TEXT NOT NULL UNIQUE, -- A human-readable name, e.g., 'python-refactor-agent-01'
   status TEXT NOT NULL DEFAULT 'IDLE', -- 'IDLE', 'BUSY'
   capabilities JSONB, -- e.g., '["python", "react", "code-review"]'
+  api_key_hash TEXT, -- SHA-256 hash of the agent's API key for secure verification
+  is_active BOOLEAN DEFAULT TRUE, -- Supervisors can toggle this to enable/disable an agent
   last_seen TIMESTAMPTZ DEFAULT NOW(),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -26,6 +60,37 @@ COMMENT ON TABLE agents IS 'Registry for all GenAI agents, their status, and cap
 COMMENT ON COLUMN agents.status IS 'The current working status of the agent.';
 COMMENT ON COLUMN agents.capabilities IS 'A set of tags describing what the agent can do.';
 COMMENT ON COLUMN agents.last_seen IS 'A heartbeat timestamp to monitor agent health.';
+COMMENT ON COLUMN agents.api_key_hash IS 'SHA-256 hash of the agent\'s API key for secure verification.';
+COMMENT ON COLUMN agents.is_active IS 'Supervisors can toggle this to enable/disable an agent.';
+
+-- =====================================================
+-- System Configuration Management
+-- =====================================================
+
+-- System Settings Table
+-- A key-value store for user-configurable system parameters.
+CREATE TABLE system_settings (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  description TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+COMMENT ON TABLE system_settings IS 'A key-value store for user-configurable system parameters.';
+COMMENT ON COLUMN system_settings.key IS 'Unique identifier for the setting.';
+COMMENT ON COLUMN system_settings.value IS 'JSONB value allowing flexible data types (numbers, strings, objects).';
+COMMENT ON COLUMN system_settings.description IS 'Human-readable description of what this setting controls.';
+
+-- Insert the initial setting value for outlier detection
+INSERT INTO system_settings (key, value, description)
+VALUES ('outlier_detection_stddev', '2.0', 'Number of standard deviations above average cost to flag a task for review.');
+
+-- Enable RLS on system_settings
+ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow supervisors and admins to manage settings" ON system_settings
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+CREATE POLICY "Allow viewers to read settings" ON system_settings
+  FOR SELECT USING (get_my_role() = 'viewer');
 
 -- Tasks Table
 -- This table holds all development tasks for the GenAI agents.
@@ -60,6 +125,37 @@ CREATE TABLE subscriptions (
 ALTER TABLE tasks REPLICA IDENTITY FULL;
 ALTER TABLE service_registry REPLICA IDENTITY FULL;
 ALTER TABLE agents REPLICA IDENTITY FULL;
+
+-- =====================================================
+-- Row Level Security (RLS) Policies
+-- =====================================================
+
+-- Secure the tasks table
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all access for supervisors and admins" ON tasks;
+CREATE POLICY "Allow all access for supervisors and admins" ON tasks
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+DROP POLICY IF EXISTS "Allow read-only access for viewers" ON tasks;
+CREATE POLICY "Allow read-only access for viewers" ON tasks
+  FOR SELECT USING (get_my_role() = 'viewer');
+
+-- Secure the service_registry table
+ALTER TABLE service_registry ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all access for supervisors and admins" ON service_registry;
+CREATE POLICY "Allow all access for supervisors and admins" ON service_registry
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+DROP POLICY IF EXISTS "Allow read-only access for viewers" ON service_registry;
+CREATE POLICY "Allow read-only access for viewers" ON service_registry
+  FOR SELECT USING (get_my_role() = 'viewer');
+
+-- Secure the agents table
+ALTER TABLE agents ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all access for supervisors and admins" ON agents;
+CREATE POLICY "Allow all access for supervisors and admins" ON agents
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+DROP POLICY IF EXISTS "Allow read-only access for viewers" ON agents;
+CREATE POLICY "Allow read-only access for viewers" ON agents
+  FOR SELECT USING (get_my_role() = 'viewer');
 
 -- Initial data for demonstration
 INSERT INTO service_registry (id, display_name, api_endpoint, monthly_budget_usd) VALUES
@@ -143,15 +239,17 @@ COMMENT ON COLUMN service_usage_log.task_id IS 'The task that triggered this ser
 COMMENT ON COLUMN service_usage_log.service_id IS 'The service that was charged (could be the original or a substitutor).';
 COMMENT ON COLUMN service_usage_log.charge_amount IS 'The cost in USD for this specific transaction.';
 
--- Add RLS policy
+-- Add RLS policy for service_usage_log
 ALTER TABLE service_usage_log ENABLE ROW LEVEL SECURITY;
 
--- For now, create a permissive policy for authenticated users.
--- This can be tightened later.
-CREATE POLICY "Allow authenticated users to read all logs"
-  ON service_usage_log FOR SELECT
-  TO authenticated
-  USING (true);
+-- Allow all roles to read audit logs for transparency
+DROP POLICY IF EXISTS "Allow authenticated users to read all logs" ON service_usage_log;
+CREATE POLICY "Allow all users to read service usage logs" ON service_usage_log
+  FOR SELECT USING (get_my_role() IN ('admin', 'supervisor', 'viewer'));
+
+-- Only supervisors and admins can insert new log entries (through application logic)
+CREATE POLICY "Allow supervisors and admins to insert usage logs" ON service_usage_log
+  FOR INSERT WITH CHECK (get_my_role() IN ('supervisor', 'admin'));
 
 -- Orchestration Engine: Atomic Task Claiming Function
 -- This function atomically finds the next available task, assigns it to an agent,
@@ -281,22 +379,33 @@ ALTER TABLE tasks
 
 COMMENT ON COLUMN tasks.review_flag IS 'If true, this task is flagged for supervisor review due to performance outliers.';
 
--- This function identifies tasks with costs above a certain threshold (e.g., 2 standard deviations)
--- and flags them for review.
+-- This function identifies tasks with costs above a configurable threshold
+-- and flags them for review. The threshold is now stored in system_settings.
 CREATE OR REPLACE FUNCTION flag_costly_tasks()
 RETURNS void AS $$
 DECLARE
   avg_cost NUMERIC;
   stddev_cost NUMERIC;
+  threshold_stddev NUMERIC;
   threshold NUMERIC;
 BEGIN
+  -- 1. Read the dynamic threshold from the settings table
+  SELECT (value::NUMERIC) INTO threshold_stddev 
+  FROM system_settings 
+  WHERE key = 'outlier_detection_stddev';
+  
+  -- Default to 2.0 if setting is not found
+  IF threshold_stddev IS NULL THEN
+    threshold_stddev := 2.0;
+  END IF;
+
   -- Calculate the average and standard deviation of costs for completed tasks
   SELECT AVG(total_cost), STDDEV(total_cost)
   INTO avg_cost, stddev_cost
   FROM task_cost_summary;
 
-  -- Set the threshold for flagging (e.g., average + 2 standard deviations)
-  threshold := avg_cost + (2 * stddev_cost);
+  -- Calculate the dynamic threshold
+  threshold := avg_cost + (threshold_stddev * stddev_cost);
 
   -- Flag tasks that exceed the threshold and are not already flagged
   UPDATE tasks
