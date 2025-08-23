@@ -136,7 +136,7 @@ The implementation follows structured workflows outlined below. Each section rep
 - Create UI controls for agent activation/deactivation
 - Implement sandbox request and termination interfaces
 
-## 5. GitHub Integration Workflow
+## 6. GitHub Integration Workflow
 
 ### 5.1 Backend Implementation
 - Implement POST `/api/webhooks/github` endpoint with secure signature verification using HMAC SHA-256
@@ -151,7 +151,7 @@ The implementation follows structured workflows outlined below. Each section rep
 - Test PR feedback posting functionality
 - Validate error handling for GitHub API failures
 
-## 6. Intelligence and Analytics Layer
+## 7. Intelligence and Analytics Layer
 
 ### 6.1 Backend Implementation
 - Implement `knowledge_base` table with 1536-dimension vector embeddings for OpenAI's text-embedding-ada-002
@@ -168,7 +168,7 @@ The implementation follows structured workflows outlined below. Each section rep
 - Add Grafana dashboard embedding with `GrafanaPanel` component
 - Implement real-time data fetching with loading states and error handling
 
-## 7. Real-time Monitoring Workflow
+## 8. Real-time Monitoring Workflow
 
 ### 7.1 Database Configuration
 - Verify Realtime is enabled on all relevant tables (tasks, agents, service_registry)
@@ -182,7 +182,7 @@ The implementation follows structured workflows outlined below. Each section rep
 - Add visual indicators for special tasks (chained tasks, flagged tasks)
 - Implement task detail modal for comprehensive task information
 
-## 8. Security and Authentication
+## 9. Security and Authentication
 
 ### 8.1 Backend Implementation
 - Implement `handle_new_user` PostgreSQL trigger for automatic role assignment
@@ -198,7 +198,7 @@ The implementation follows structured workflows outlined below. Each section rep
 - Add session timeout handling and security settings
 - Implement protected route access and redirect behavior
 
-## 9. System Configuration Management
+## 10. System Configuration Management
 
 ### 9.1 Backend Implementation
 - Implement system_settings table with key-value store for configurable parameters
@@ -213,7 +213,7 @@ The implementation follows structured workflows outlined below. Each section rep
 - Add UI controls for updating outlier detection threshold
 - Implement real-time updates for system configuration changes
 
-## 9. DevOps and Deployment
+## 11. DevOps and Deployment
 
 ### 9.1 API Deployment
 - Configure `wrangler.toml` for Cloudflare Workers deployment
@@ -246,7 +246,7 @@ The implementation follows structured workflows outlined below. Each section rep
 - Implement GrafanaPanel component for embedding panels in the Next.js UI
 - Add setup-grafana-datasource.js and setup-grafana-dashboards.js scripts for automated setup
 
-## 10. Marketplace Implementation
+## 12. Marketplace Implementation
 
 ### 10.1 Backend Implementation
 - Implement marketplace_items table with item metadata (name, version, tags, repository_url)
@@ -260,7 +260,7 @@ The implementation follows structured workflows outlined below. Each section rep
 - Add publishing interface for supervisors to share their agents and workflows
 - Implement search and filtering capabilities by tags and item type
 
-## 11. Testing and Quality Assurance
+## 13. Testing and Quality Assurance
 
 ### 11.1 Unit Tests
 - Write unit tests for critical business logic:
@@ -314,14 +314,15 @@ The implementation follows structured workflows outlined below. Each section rep
 2. **Phase 2** (Budget Supervision): Depends on Supabase database and Cloudflare deployment
 3. **Phase 3** (Task Orchestration): Depends on RabbitMQ setup and database schema
 4. **Phase 4** (Human-in-the-Loop): Can be implemented in parallel with Phases 2-3
-5. **Phase 5** (GitHub Integration): Depends on webhook configuration and API endpoints
-6. **Phase 6** (Intelligence Layer): Depends on OpenAI API key and pgvector extension
-7. **Phase 7** (Monitoring): Depends on real-time configuration
-8. **Phase 8** (Security): Can be implemented in parallel with other phases
-9. **Phase 9** (System Configuration): Can be implemented in parallel with other phases
-10. **Phase 10** (DevOps): Deployment configuration can happen throughout development
-11. **Phase 11** (Marketplace): Depends on authentication and RBAC implementation
-12. **Phase 12** (Testing): Testing should happen continuously throughout implementation
+5. **Phase 5** (Agent Management): Depends on authentication and agent registration implementation
+6. **Phase 6** (GitHub Integration): Depends on webhook configuration and API endpoints
+7. **Phase 7** (Intelligence Layer): Depends on OpenAI API key and pgvector extension
+8. **Phase 8** (Monitoring): Depends on real-time configuration
+9. **Phase 9** (Security): Can be implemented in parallel with other phases
+10. **Phase 10** (System Configuration): Can be implemented in parallel with other phases
+11. **Phase 11** (DevOps): Deployment configuration can happen throughout development
+12. **Phase 12** (Marketplace): Depends on authentication and RBAC implementation
+13. **Phase 13** (Testing): Testing should happen continuously throughout implementation
 
 ### Critical Path
 - Database schema implementation
