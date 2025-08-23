@@ -1,28 +1,54 @@
-// A simple placeholder for your dashboard.
-// In a real app, you would use the Supabase client here to fetch and display data in real-time.
+import { createClient } from '@supabase/supabase-js';
+import TaskBoard from '../components/TaskBoard';
 
-async function getTasks() {
-  // In a real app, this would fetch from your live API.
-  // For this example, we'll just return some mock data.
-  // const res = await fetch('http://localhost:8787/api/tasks');
-  // if (!res.ok) return [];
-  // return res.json();
-  return [
-    { id: 1, title: 'Setup Initial Project Structure', status: 'DONE' },
-    { id: 2, title: 'Implement User Authentication', status: 'IN_PROGRESS' },
-    { id: 3, title: 'Build Live Task Board', status: 'TODO' },
-    { id: 4, title: 'Setup Budget Supervisor', status: 'TODO' },
-  ];
+/**
+ * Interface matching the Task database table structure
+ */
+interface Task {
+  id: string;
+  title: string;
+  description: string | null;
+  status: 'TODO' | 'IN_PROGRESS' | 'DONE' | 'QUARANTINED' | 'PENDING_BUDGET_APPROVAL';
+  priority: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  agent_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Fetches initial tasks on the server for SEO and performance
+ * This runs during server-side rendering and provides initial data
+ */
+async function getInitialTasks(): Promise<Task[]> {
+  try {
+    // Create a temporary server-side client using public credentials
+    // This is safe because we're only reading public data
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+    
+    const { data, error } = await supabase
+      .from('tasks')
+      .select('*')
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('Error fetching initial tasks:', error);
+      return [];
+    }
+    
+    return data || [];
+  } catch (err) {
+    console.error('Unexpected error fetching initial tasks:', err);
+    return [];
+  }
 }
 
 export default async function HomePage() {
-  const tasks = await getTasks();
+  const initialTasks = await getInitialTasks();
 
-  const statusColor = {
-    DONE: 'bg-green-500',
-    IN_PROGRESS: 'bg-blue-500',
-    TODO: 'bg-gray-500',
-  };
+
 
   return (
     <main className="container mx-auto p-8">
@@ -32,19 +58,9 @@ export default async function HomePage() {
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        {/* Task Board Column */}
-        <div className="md:col-span-2 bg-gray-800 p-6 rounded-lg">
-          <h2 className="text-2xl font-semibold mb-4">Task Board</h2>
-          <div className="space-y-4">
-            {tasks.map((task) => (
-              <div key={task.id} className="bg-gray-700 p-4 rounded-md flex justify-between items-center">
-                <p>{task.title}</p>
-                <span className={`px-2 py-1 text-xs font-bold rounded-full ${statusColor[task.status as keyof typeof statusColor]}`}>
-                  {task.status}
-                </span>
-              </div>
-            ))}
-          </div>
+        {/* Task Board Column - now using the real-time component */}
+        <div className="md:col-span-2">
+          <TaskBoard initialTasks={initialTasks} />
         </div>
 
         {/* Service Status Column */}

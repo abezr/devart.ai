@@ -47,3 +47,49 @@ UPDATE service_registry SET substitutor_service_id = 'free_llm' WHERE id = 'prem
 INSERT INTO tasks (title, description) VALUES
 ('Setup Initial Project Structure', 'Create the basic file structure for the devart.ai application.'),
 ('Implement User Authentication', 'Add login and logout functionality using Supabase Auth.');
+
+-- Budget Supervisor Core Function
+-- This function atomically checks budget, updates usage, and handles suspension.
+-- It prevents race conditions when multiple requests charge the same service simultaneously.
+CREATE OR REPLACE FUNCTION charge_service(service_id_to_charge TEXT, charge_amount NUMERIC)
+RETURNS service_registry AS $$
+DECLARE
+  service RECORD;
+  substitutor_service RECORD;
+BEGIN
+  -- Lock the row for this transaction to prevent race conditions
+  SELECT * INTO service FROM service_registry WHERE id = service_id_to_charge FOR UPDATE;
+
+  IF service IS NULL THEN
+    RETURN NULL; -- Service not found
+  END IF;
+
+  -- Check if service should be suspended (budget exceeded or already suspended)
+  IF service.status = 'SUSPENDED' OR (service.current_usage_usd + charge_amount > service.monthly_budget_usd AND service.monthly_budget_usd > 0) THEN
+    -- Mark as suspended if not already
+    IF service.status = 'ACTIVE' THEN
+      UPDATE service_registry SET status = 'SUSPENDED' WHERE id = service_id_to_charge;
+      -- NOTE: In a real system, you would trigger a notification here
+    END IF;
+
+    -- Check for a substitutor service
+    IF service.substitutor_service_id IS NOT NULL THEN
+      SELECT * INTO substitutor_service FROM service_registry WHERE id = service.substitutor_service_id;
+      IF substitutor_service IS NOT NULL AND substitutor_service.status = 'ACTIVE' THEN
+        RETURN substitutor_service;
+      END IF;
+    END IF;
+    
+    RETURN NULL; -- No budget and no valid substitutor
+  ELSE
+    -- Budget is OK, update usage and return the original service
+    UPDATE service_registry
+    SET current_usage_usd = service.current_usage_usd + charge_amount
+    WHERE id = service_id_to_charge;
+    
+    -- Re-fetch the service to return the updated state
+    SELECT * INTO service FROM service_registry WHERE id = service_id_to_charge;
+    RETURN service;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
