@@ -87,6 +87,17 @@ The implementation follows structured workflows outlined below. Each section rep
 - Implement message listening logic on tasks.todo queue
 - Add delay handling for retry scenarios
 
+### 3.3 Workflow Engine Implementation
+- Implement workflows table for tracking predefined, reusable workflows
+- Implement task_templates table for workflow task definitions
+- Create GET /api/workflows endpoint for listing workflows
+- Implement POST /api/workflows endpoint for creating new workflows
+- Implement GET /api/workflows/:workflowId/templates for retrieving task templates
+- Create POST /api/workflows/:workflowId/trigger endpoint for executing workflows
+- Implement template rendering with variable substitution
+- Add workflow_runs table for tracking workflow executions
+- Implement workflow completion detection with check_workflow_completion function
+
 ## 4. Human-in-the-Loop Approval Workflow
 
 ### 4.1 Backend Security Implementation
@@ -107,6 +118,23 @@ The implementation follows structured workflows outlined below. Each section rep
 - Implement UI controls for editing and deleting tasks on the `TaskBoard`
 - Add role-based access controls for supervisor functions
 - Implement real-time updates for task modifications
+
+## 5. Agent Management
+
+### 5.1 Backend Implementation
+- Implement agents table with capabilities, status, and API key management
+- Create POST `/api/agents/register` endpoint for secure agent registration
+- Implement PUT `/api/agents/heartbeat` endpoint for agent health monitoring
+- Add PUT `/api/agents/:agentId/activation` endpoint for agent activation/deactivation
+- Implement agent_sandboxes table for tracking isolated execution environments
+- Create POST `/api/agents/:agentId/request-sandbox` endpoint for sandbox provisioning
+- Implement DELETE `/api/sandboxes/:sandboxId` endpoint for sandbox termination
+
+### 5.2 Frontend Implementation
+- Implement AgentRegistrationPanel component for supervisor agent management
+- Add AgentMonitoringPanel component for real-time agent status monitoring
+- Create UI controls for agent activation/deactivation
+- Implement sandbox request and termination interfaces
 
 ## 5. GitHub Integration Workflow
 
@@ -170,6 +198,21 @@ The implementation follows structured workflows outlined below. Each section rep
 - Add session timeout handling and security settings
 - Implement protected route access and redirect behavior
 
+## 9. System Configuration Management
+
+### 9.1 Backend Implementation
+- Implement system_settings table with key-value store for configurable parameters
+- Create GET /api/settings/:key endpoint for retrieving specific settings
+- Implement PUT /api/settings/:key endpoint for updating settings
+- Add GET /api/settings endpoint for retrieving all settings
+- Implement flag_costly_tasks function for automatic performance outlier detection
+- Add outlier_detection_stddev setting with default value of 2.0 standard deviations
+
+### 9.2 Frontend Implementation
+- Implement SettingsPanel component for viewing and modifying system settings
+- Add UI controls for updating outlier detection threshold
+- Implement real-time updates for system configuration changes
+
 ## 9. DevOps and Deployment
 
 ### 9.1 API Deployment
@@ -189,6 +232,8 @@ The implementation follows structured workflows outlined below. Each section rep
 - Document usage and configuration options in README.md
 - Create example agents for different use cases
 - Configure requirements.txt with all dependencies
+- Implement AgentSDK class with start_consuming and update_task_status methods
+- Add heartbeat mechanism for agent health monitoring
 
 ### 9.4 Grafana Integration
 - Deploy Grafana instance using Docker (grafana/grafana-oss image)
@@ -198,44 +243,70 @@ The implementation follows structured workflows outlined below. Each section rep
   - Agent Status panel using pie chart SQL query
   - Average Task Cost panel using stat panel SQL query
 - Configure embedding settings for iframe integration
+- Implement GrafanaPanel component for embedding panels in the Next.js UI
+- Add setup-grafana-datasource.js and setup-grafana-dashboards.js scripts for automated setup
 
-## 10. Testing and Quality Assurance
+## 10. Marketplace Implementation
 
-### 10.1 Unit Tests
+### 10.1 Backend Implementation
+- Implement marketplace_items table with item metadata (name, version, tags, repository_url)
+- Create GET /api/marketplace endpoint for listing/searching items
+- Implement POST /api/marketplace endpoint for publishing new items with RBAC protection
+- Add validation logic for marketplace item publishing to prevent duplicate name/version combinations
+- Associate published item with authenticated user's ID
+
+### 10.2 Frontend Implementation
+- Implement marketplace browsing UI for discovering shared agents and workflows
+- Add publishing interface for supervisors to share their agents and workflows
+- Implement search and filtering capabilities by tags and item type
+
+## 11. Testing and Quality Assurance
+
+### 11.1 Unit Tests
 - Write unit tests for critical business logic:
   - Budget calculations in `charge_service` function
   - Signature verification for GitHub webhooks
   - Task claiming and status update logic
   - Semantic search functionality
   - Agent registration and authentication
+  - Kubernetes sandbox provisioning and termination
+  - RabbitMQ task publishing and consumption
 
-### 10.2 Integration Tests
+### 11.2 Integration Tests
 - Test the full workflow from a GitHub PR creating a task
 - Test agent claiming and processing tasks via RabbitMQ
 - Test agent posting feedback to GitHub
 - Test budget supervision with service suspension and fallback
 - Test task chaining and workflow execution
+- Test agent sandboxing with Kubernetes integration
+- Test marketplace item publishing and discovery
 
-### 10.3 End-to-End Tests
+### 11.3 End-to-End Tests
 - Simulate a user logging in and creating a task
 - Verify task appears in real-time on the TaskBoard
 - Simulate an agent claiming and completing the task
 - Verify task status updates in real-time
 - Test supervisor functions (budget increase, agent management)
+- Test workflow execution with multiple chained tasks
+- Test performance outlier detection and flagging
 
-### 10.4 Performance Tests
+### 11.4 Performance Tests
 - Load test the API endpoints under high concurrency
 - Test the RabbitMQ queue performance with high task volumes
 - Measure latency for task claiming and status updates
 - Test database query performance with large datasets
 - Validate real-time subscription performance
+- Test Kubernetes sandbox provisioning performance
+- Benchmark semantic search response times
 
-### 10.5 Security Audit
+### 11.5 Security Audit
 - Perform a security review of all endpoints
 - Verify RLS policies are correctly implemented
 - Test authentication mechanisms and API key security
 - Review Telegram notification security implementation
 - Validate GitHub webhook signature verification
+- Test agent API key verification and authorization
+- Verify marketplace item publishing RBAC controls
 
 ## Dependencies and Implementation Order
 
@@ -247,8 +318,10 @@ The implementation follows structured workflows outlined below. Each section rep
 6. **Phase 6** (Intelligence Layer): Depends on OpenAI API key and pgvector extension
 7. **Phase 7** (Monitoring): Depends on real-time configuration
 8. **Phase 8** (Security): Can be implemented in parallel with other phases
-9. **Phase 9** (DevOps): Deployment configuration can happen throughout development
-10. **Phase 10** (Testing): Testing should happen continuously throughout implementation
+9. **Phase 9** (System Configuration): Can be implemented in parallel with other phases
+10. **Phase 10** (DevOps): Deployment configuration can happen throughout development
+11. **Phase 11** (Marketplace): Depends on authentication and RBAC implementation
+12. **Phase 12** (Testing): Testing should happen continuously throughout implementation
 
 ### Critical Path
 - Database schema implementation
@@ -256,6 +329,7 @@ The implementation follows structured workflows outlined below. Each section rep
 - Real-time functionality
 - Authentication system
 - Task orchestration with RabbitMQ
+- Kubernetes sandboxing integration
 
 ## Key Implementation Patterns
 
@@ -291,11 +365,20 @@ The implementation follows structured workflows outlined below. Each section rep
 - Implement agent self-registration with capabilities and heartbeat mechanism
 - Use dedicated service modules for external integrations with centralized error handling
 - Implement visual indicators in the UI for special task states (chained tasks, flagged tasks)
+- Implement agent sandboxing with Kubernetes for isolated execution environments
+- Add retry mechanism with exponential backoff for failed tasks
 
 ### Analytics
 - Implement analytics features using PostgreSQL views for complex aggregations
 - Use vector database capabilities with pgvector for semantic search
 - Create dedicated SDKs and template repositories for developer experience
+- Implement performance outlier detection using statistical methods (average + 2 standard deviations)
+- Add INDEX on knowledge_base embedding column for vector similarity search performance
+
+### Marketplace
+- Implement marketplace with versioned items for agents and workflows
+- Add tagging system for easy discovery and categorization
+- Implement RBAC controls for publishing permissions
 
 ## Conclusion
 
