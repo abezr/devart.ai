@@ -379,6 +379,16 @@ ALTER TABLE tasks
 
 COMMENT ON COLUMN tasks.review_flag IS 'If true, this task is flagged for supervisor review due to performance outliers.';
 
+-- Add columns for error handling and retry mechanism
+ALTER TABLE tasks
+  ADD COLUMN retry_count INT DEFAULT 0,
+  ADD COLUMN max_retries INT DEFAULT 3,
+  ADD COLUMN last_error TEXT;
+
+COMMENT ON COLUMN tasks.retry_count IS 'The number of times this task has been attempted.';
+COMMENT ON COLUMN tasks.max_retries IS 'The maximum number of retries allowed for this task.';
+COMMENT ON COLUMN tasks.last_error IS 'The error message from the last failed attempt.';
+
 -- Agent Sandboxes Table
 -- Tracks isolated execution environments for agents.
 CREATE TABLE agent_sandboxes (
@@ -449,3 +459,91 @@ BEGIN
   ) AND review_flag = FALSE;
 END;
 $$ LANGUAGE plpgsql;
+
+-- =====================================================
+-- Marketplace Implementation
+-- =====================================================
+
+-- Marketplace Items Table
+-- Stores metadata for shared agents and workflows.
+CREATE TABLE marketplace_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  item_type TEXT NOT NULL, -- 'agent' or 'workflow'
+  name TEXT NOT NULL,
+  description TEXT,
+  version TEXT NOT NULL,
+  publisher_id UUID REFERENCES auth.users(id),
+  tags JSONB, -- For search and categorization
+  repository_url TEXT, -- Link to the source code
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (name, version)
+);
+
+COMMENT ON TABLE marketplace_items IS 'Stores metadata for shared agents and workflows.';
+COMMENT ON COLUMN marketplace_items.item_type IS 'The type of item: agent or workflow';
+COMMENT ON COLUMN marketplace_items.name IS 'The name of the item';
+COMMENT ON COLUMN marketplace_items.description IS 'Description of the item';
+COMMENT ON COLUMN marketplace_items.version IS 'Version identifier';
+COMMENT ON COLUMN marketplace_items.publisher_id IS 'Reference to the user who published this item';
+COMMENT ON COLUMN marketplace_items.tags IS 'Tags for search and categorization';
+COMMENT ON COLUMN marketplace_items.repository_url IS 'Link to the source code repository';
+COMMENT ON COLUMN marketplace_items.created_at IS 'Creation timestamp';
+
+-- =====================================================
+-- Workflow Performance Data Collection
+-- =====================================================
+
+-- Workflow Runs Table
+-- Tracks each instance of a workflow being triggered.
+CREATE TABLE workflow_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_id UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'RUNNING', -- 'RUNNING', 'COMPLETED', 'FAILED'
+  trigger_context JSONB, -- The initial variables used to start the workflow
+  start_time TIMESTAMPTZ DEFAULT NOW(),
+  end_time TIMESTAMPTZ,
+  total_cost NUMERIC
+);
+
+COMMENT ON TABLE workflow_runs IS 'Tracks each instance of a workflow being triggered.';
+COMMENT ON COLUMN workflow_runs.workflow_id IS 'Reference to the workflow that was triggered';
+COMMENT ON COLUMN workflow_runs.status IS 'Execution status of the workflow run';
+COMMENT ON COLUMN workflow_runs.trigger_context IS 'The initial variables used to start the workflow';
+COMMENT ON COLUMN workflow_runs.start_time IS 'Execution start time';
+COMMENT ON COLUMN workflow_runs.end_time IS 'Execution end time';
+COMMENT ON COLUMN workflow_runs.total_cost IS 'Aggregated cost of all tasks in the workflow';
+
+-- Add a column to tasks to link them to a specific workflow run
+ALTER TABLE tasks ADD COLUMN workflow_run_id UUID REFERENCES workflow_runs(id) ON DELETE SET NULL;
+
+COMMENT ON COLUMN tasks.workflow_run_id IS 'Link to the workflow run this task belongs to';
+
+-- Function to check if a workflow is complete and update its status atomically
+CREATE OR REPLACE FUNCTION check_workflow_completion(workflow_run_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE
+  incomplete_count INTEGER;
+  updated BOOLEAN := FALSE;
+BEGIN
+  -- Count incomplete tasks for this workflow run
+  SELECT COUNT(*) INTO incomplete_count
+  FROM tasks
+  WHERE workflow_run_id = check_workflow_completion.workflow_run_id
+  AND status NOT IN ('DONE', 'QUARANTINED');
+
+  -- If no incomplete tasks, mark workflow as complete
+  IF incomplete_count = 0 THEN
+    UPDATE workflow_runs
+    SET 
+      status = 'COMPLETED',
+      end_time = NOW()
+    WHERE id = check_workflow_completion.workflow_run_id;
+    
+    updated := TRUE;
+  END IF;
+  
+  RETURN updated;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION check_workflow_completion IS 'Checks if a workflow is complete and updates its status atomically.';

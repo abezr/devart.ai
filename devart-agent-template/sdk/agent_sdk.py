@@ -1,6 +1,9 @@
 import os
 import requests
 import time
+import pika
+import json
+import threading
 
 class AgentSDK:
     def __init__(self, agent_id: str, api_key: str, api_base_url: str):
@@ -9,20 +12,133 @@ class AgentSDK:
         self.agent_id = agent_id
         self.api_base_url = api_base_url
         self.headers = {"Authorization": f"Bearer {api_key}"}
+        self.rabbitmq_connection = None
+        self.rabbitmq_channel = None
+        self.consumer_thread = None
+        self.running = False
 
-    def claim_task(self):
-        """Claims the next available task from the queue."""
-        url = f"{self.api_base_url}/api/agents/{self.agent_id}/claim-task"
+    def _connect_to_rabbitmq(self):
+        """Establish a connection to RabbitMQ."""
+        if not self.rabbitmq_connection:
+            # Get RabbitMQ connection parameters from environment variables
+            rabbitmq_url = os.getenv('RABBITMQ_URL', 'amqp://localhost')
+            self.rabbitmq_connection = pika.BlockingConnection(pika.URLParameters(rabbitmq_url))
+            self.rabbitmq_channel = self.rabbitmq_connection.channel()
+            
+            # Declare the queue to ensure it exists
+            queue_name = os.getenv('RABBITMQ_TASKS_QUEUE', 'tasks.todo')
+            self.rabbitmq_channel.queue_declare(queue=queue_name, durable=True)
+
+    def start_consuming(self, callback):
+        """
+        Start consuming tasks from the RabbitMQ queue.
+        
+        Args:
+            callback: A function that takes a task dictionary as an argument
+        """
+        self._connect_to_rabbitmq()
+        
+        def consume():
+            self.running = True
+            
+            def on_message(channel, method, properties, body):
+                if not self.running:
+                    return
+                    
+                try:
+                    # Parse the task ID or task data from the message
+                    message_data = body.decode('utf-8')
+                    
+                    # Check if it's a JSON message with delay information
+                    try:
+                        message_obj = json.loads(message_data)
+                        task_id = message_obj.get('taskId')
+                        delay_until = message_obj.get('delayUntil')
+                        
+                        # If there's a delay, check if it's time to process
+                        if delay_until and delay_until > time.time() * 1000:
+                            # Requeue the message with the remaining delay
+                            remaining_delay = int(delay_until - time.time() * 1000)
+                            if remaining_delay > 0:
+                                # Republish with delay (this would work with RabbitMQ delayed message exchange)
+                                channel.basic_publish(
+                                    exchange='',
+                                    routing_key=method.routing_key,
+                                    body=body,
+                                    properties=pika.BasicProperties(
+                                        headers={'x-delay': remaining_delay}
+                                    )
+                                )
+                                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                                return
+                    except json.JSONDecodeError:
+                        # If it's not JSON, treat it as a simple task ID
+                        task_id = message_data
+                    
+                    # Get the full task details from the API
+                    task = self.get_task_details(task_id)
+                    if task:
+                        # Call the user's callback function with the task
+                        callback(task)
+                        
+                    # Acknowledge the message
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
+                except Exception as e:
+                    print(f"Error processing message: {e}")
+                    # Reject and requeue the message
+                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            
+            queue_name = os.getenv('RABBITMQ_TASKS_QUEUE', 'tasks.todo')
+            self.rabbitmq_channel.basic_consume(queue=queue_name, on_message_callback=on_message)
+            
+            try:
+                self.rabbitmq_channel.start_consuming()
+            except KeyboardInterrupt:
+                self.rabbitmq_channel.stop_consuming()
+                self.rabbitmq_connection.close()
+
+        # Start consuming in a separate thread
+        self.consumer_thread = threading.Thread(target=consume)
+        self.consumer_thread.start()
+
+    def stop_consuming(self):
+        """Stop consuming tasks from the RabbitMQ queue."""
+        self.running = False
+        if self.rabbitmq_channel and self.rabbitmq_channel.is_open:
+            self.rabbitmq_channel.stop_consuming()
+        if self.rabbitmq_connection and self.rabbitmq_connection.is_open:
+            self.rabbitmq_connection.close()
+        if self.consumer_thread:
+            self.consumer_thread.join()
+
+    def get_task_details(self, task_id: str):
+        """Get the full details of a task by ID."""
+        url = f"{self.api_base_url}/api/tasks/{task_id}"
         try:
-            response = requests.post(url, headers=self.headers)
+            response = requests.get(url, headers=self.headers)
             if response.status_code == 200:
                 return response.json()
-            if response.status_code == 404:
-                return None # No tasks available
-            response.raise_for_status()
+            else:
+                print(f"Error fetching task details: {response.status_code}")
+                return None
         except requests.RequestException as e:
-            print(f"Error claiming task: {e}")
+            print(f"Error fetching task details: {e}")
             return None
+
+    # DEPRECATED: This method is deprecated in favor of the RabbitMQ-based task distribution system
+    # def claim_task(self):
+    #     """Claims the next available task from the queue."""
+    #     url = f"{self.api_base_url}/api/agents/{self.agent_id}/claim-task"
+    #     try:
+    #         response = requests.post(url, headers=self.headers)
+    #         if response.status_code == 200:
+    #             return response.json()
+    #         if response.status_code == 404:
+    #             return None # No tasks available
+    #         response.raise_for_status()
+    #     except requests.RequestException as e:
+    #         print(f"Error claiming task: {e}")
+    #         return None
 
     def update_task_status(self, task_id: str, status: str):
         """Updates the status of the current task."""

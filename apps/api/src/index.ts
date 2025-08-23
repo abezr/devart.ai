@@ -6,6 +6,12 @@ import { sendTelegramMessage } from './services/telegram';
 import { generateEmbedding } from './services/embedding';
 import { postPRComment, createCheckRun } from './services/github';
 
+// Import the RabbitMQ service functions
+import { publishTask } from './services/rabbitmq';
+
+// Import the Kubernetes service functions
+import { provisionSandbox, terminateSandbox } from './services/kubernetes';
+
 // This is the Cloudflare environment, which includes secrets
 export type Env = {
   SUPABASE_URL: string;
@@ -331,6 +337,15 @@ app.post('/api/tasks', async (c) => {
       console.error('Error creating task:', error);
       return c.json({ error: 'Could not create task' }, 500);
     }
+    
+    // Publish the task to RabbitMQ queue
+    try {
+      await publishTask(data.id);
+    } catch (publishError) {
+      console.error('Failed to publish task to RabbitMQ:', publishError);
+      // Don't fail the request if RabbitMQ publishing fails, just log it
+    }
+    
     return c.json(data, 201);
   } catch (err) {
     console.error('Unexpected error creating task:', err);
@@ -567,37 +582,38 @@ app.put('/api/agents/heartbeat', async (c) => {
   return c.json({ message: 'Heartbeat updated successfully' });
 });
 
-// Orchestration Engine: Agent Task Claiming Endpoint (with API key auth)
-app.post('/api/agents/claim-task', async (c) => {
-  const { agentId, apiKey } = await c.req.json<{ agentId: string; apiKey: string }>();
-
-  if (!agentId || !apiKey) {
-    return c.json({ error: 'Agent ID and API key are required' }, 400);
-  }
-
-  const supabase = createSupabaseClient(c.env);
-
-  // Verify the API key
-  const agent = await verifyAgentApiKey(apiKey, supabase);
-  if (!agent || agent.id !== agentId) {
-    return c.json({ error: 'Invalid API key or agent not active' }, 401);
-  }
-
-  const { data: claimedTask, error } = await supabase.rpc('claim_next_task', {
-    requesting_agent_id: agentId,
-  });
-
-  if (error) {
-    console.error('Error claiming task:', error);
-    return c.json({ error: 'Failed to claim task' }, 500);
-  }
-
-  if (!claimedTask) {
-    return c.json({ message: 'No available tasks to claim.' }, 404);
-  }
-
-  return c.json(claimedTask);
-});
+// // DEPRECATED: Orchestration Engine: Agent Task Claiming Endpoint (with API key auth)
+// // This endpoint has been deprecated in favor of the RabbitMQ-based task distribution system
+// app.post('/api/agents/claim-task', async (c) => {
+//   const { agentId, apiKey } = await c.req.json<{ agentId: string; apiKey: string }>();
+// 
+//   if (!agentId || !apiKey) {
+//     return c.json({ error: 'Agent ID and API key are required' }, 400);
+//   }
+// 
+//   const supabase = createSupabaseClient(c.env);
+// 
+//   // Verify the API key
+//   const agent = await verifyAgentApiKey(apiKey, supabase);
+//   if (!agent || agent.id !== agentId) {
+//     return c.json({ error: 'Invalid API key or agent not active' }, 401);
+//   }
+// 
+//   const { data: claimedTask, error } = await supabase.rpc('claim_next_task', {
+//     requesting_agent_id: agentId,
+//   });
+// 
+//   if (error) {
+//     console.error('Error claiming task:', error);
+//     return c.json({ error: 'Failed to claim task' }, 500);
+//   }
+// 
+//   if (!claimedTask) {
+//     return c.json({ message: 'No available tasks to claim.' }, 404);
+//   }
+// 
+//   return c.json(claimedTask);
+// });
 
 // Orchestration Engine: Task Status Update Endpoint (with API key auth)
 app.put('/api/tasks/:taskId/status', async (c) => {
@@ -617,7 +633,19 @@ app.put('/api/tasks/:taskId/status', async (c) => {
     return c.json({ error: 'Invalid API key or agent not active' }, 401);
   }
 
-  // 1. Atomically update the task status, ONLY if the agentId matches.
+  // 1. Fetch the task to check if it belongs to a workflow
+  const { data: task, error: fetchError } = await supabase
+    .from('tasks')
+    .select('workflow_run_id')
+    .eq('id', taskId)
+    .eq('agent_id', agentId) // CRITICAL: Ownership check
+    .single();
+
+  if (fetchError || !task) {
+    return c.json({ error: 'Task not found or agent not authorized to update.' }, 404);
+  }
+
+  // 2. Atomically update the task status, ONLY if the agentId matches.
   const { data: updatedTask, error: updateError } = await supabase
     .from('tasks')
     .update({ status: newStatus })
@@ -630,7 +658,7 @@ app.put('/api/tasks/:taskId/status', async (c) => {
     return c.json({ error: 'Task not found or agent not authorized to update.' }, 404);
   }
 
-  // 2. If task is finished, set agent back to IDLE.
+  // 3. If task is finished, set agent back to IDLE.
   if (newStatus === 'DONE' || newStatus === 'QUARANTINED') {
     const { error: agentUpdateError } = await supabase
       .from('agents')
@@ -640,6 +668,92 @@ app.put('/api/tasks/:taskId/status', async (c) => {
     if (agentUpdateError) {
       // Log the error but don't fail the request, as the primary task was updated.
       console.error(`Failed to reset agent ${agentId} to IDLE:`, agentUpdateError);
+    }
+
+    // 4. If the task belongs to a workflow, check if the workflow is complete
+    if (task.workflow_run_id) {
+      // Check if there are any other non-complete tasks associated with the same workflow_run_id
+      const { data: incompleteTasks, error: incompleteTasksError } = await supabase
+        .from('tasks')
+        .select('id')
+        .eq('workflow_run_id', task.workflow_run_id)
+        .not('status', 'in', 'DONE,QUARANTINED')
+        .limit(1);
+
+      // If there are no incomplete tasks, the workflow is complete
+      if (!incompleteTasksError && incompleteTasks && incompleteTasks.length === 0) {
+        // Update the workflow run status to COMPLETED
+        const { error: workflowUpdateError } = await supabase
+          .from('workflow_runs')
+          .update({ 
+            status: 'COMPLETED',
+            end_time: new Date().toISOString()
+          })
+          .eq('id', task.workflow_run_id);
+
+        if (workflowUpdateError) {
+          console.error(`Failed to update workflow run ${task.workflow_run_id} to COMPLETED:`, workflowUpdateError);
+        }
+      }
+    }
+  }
+
+  return c.json(updatedTask);
+});
+
+// POST /api/tasks/:taskId/report-failure - Endpoint for agents to report failures
+app.post('/api/tasks/:taskId/report-failure', async (c) => {
+  const taskId = c.req.param('taskId');
+  const { agentId, errorMessage } = await c.req.json<{ agentId: string; errorMessage: string }>();
+
+  const supabase = createSupabaseClient(c.env);
+
+  // 1. Fetch the task to check its current state and max_retries
+  const { data: task, error: fetchError } = await supabase
+    .from('tasks')
+    .select('retry_count, max_retries')
+    .eq('id', taskId)
+    .eq('agent_id', agentId) // Ownership check
+    .single();
+
+  if (fetchError || !task) {
+    return c.json({ error: 'Task not found or agent not authorized.' }, 404);
+  }
+
+  const newRetryCount = task.retry_count + 1;
+  let nextStatus = 'TODO'; // Re-queue for another attempt
+
+  // 2. If max retries are exceeded, move to quarantine
+  if (newRetryCount >= task.max_retries) {
+    nextStatus = 'QUARANTINED';
+  }
+
+  // 3. Update the task and reset the agent's status
+  const { data: updatedTask, error: updateError } = await supabase
+    .from('tasks')
+    .update({
+      status: nextStatus,
+      retry_count: newRetryCount,
+      last_error: errorMessage,
+      agent_id: null, // Unassign the task
+    })
+    .eq('id', taskId)
+    .select()
+    .single();
+  
+  // Reset the failing agent to IDLE so it can pick up new work
+  await supabase.from('agents').update({ status: 'IDLE' }).eq('id', agentId);
+
+  if (updateError) return c.json({ error: 'Failed to update task status.' }, 500);
+  
+  // 4. If the task is being re-queued, republish it to RabbitMQ with a delay
+  if (nextStatus === 'TODO') {
+    try {
+      // Republish with a 5-second delay (this could be configurable)
+      await republishTaskWithDelay(taskId, 5000);
+    } catch (publishError) {
+      console.error('Failed to republish task to RabbitMQ:', publishError);
+      // Don't fail the request if RabbitMQ publishing fails, just log it
     }
   }
 
@@ -683,40 +797,41 @@ app.post('/api/agents/:agentId/request-sandbox', async (c) => {
     return c.json({ error: 'Task not found' }, 404);
   }
 
-  // --- Placeholder for Provisioning Logic ---
-  // In a real system, this would call a Docker API, Kubernetes API, or a cloud service.
-  // Example implementation outline:
-  // 1. Generate unique container name
-  // 2. Call container orchestration API to create container
-  // 3. Configure container with required environment and dependencies
-  // 4. Set up networking and security policies
-  const containerId = `sandbox-${crypto.randomUUID()}`;
-  const connectionDetails = { host: 'localhost', port: 2222 }; // Example
-  const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes from now
-  
-  console.log(`Provisioning sandbox ${containerId} for task ${taskId}...`);
-  // --- End of Placeholder ---
+  // Provision a sandbox using Kubernetes
+  try {
+    const { containerId, connectionDetails } = await provisionSandbox(taskId);
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes from now
 
-  // Create sandbox record in database
-  const { data: sandbox, error } = await supabase
-    .from('agent_sandboxes')
-    .insert({
-      agent_id: agentId,
-      task_id: taskId,
-      status: 'ACTIVE', // Assume provisioning is instant for this example
-      container_id: containerId,
-      connection_details: connectionDetails,
-      expires_at: expiresAt.toISOString(),
-    })
-    .select()
-    .single();
+    // Create sandbox record in database
+    const { data: sandbox, error } = await supabase
+      .from('agent_sandboxes')
+      .insert({
+        agent_id: agentId,
+        task_id: taskId,
+        status: 'PROVISIONING', // Set initial status to PROVISIONING
+        container_id: containerId,
+        connection_details: connectionDetails,
+        expires_at: expiresAt.toISOString(),
+      })
+      .select()
+      .single();
 
-  if (error) {
-    console.error('Failed to create sandbox record:', error);
-    return c.json({ error: 'Failed to create sandbox record' }, 500);
+    if (error) {
+      console.error('Failed to create sandbox record:', error);
+      // Try to clean up the Kubernetes resources
+      try {
+        await terminateSandbox(containerId);
+      } catch (cleanupError) {
+        console.error('Failed to clean up Kubernetes resources:', cleanupError);
+      }
+      return c.json({ error: 'Failed to create sandbox record' }, 500);
+    }
+
+    return c.json(sandbox, 201);
+  } catch (provisionError) {
+    console.error('Failed to provision sandbox:', provisionError);
+    return c.json({ error: 'Failed to provision sandbox' }, 500);
   }
-
-  return c.json(sandbox, 201);
 });
 
 // Agent Execution Sandboxing: Terminate a sandbox
@@ -746,14 +861,13 @@ app.delete('/api/sandboxes/:sandboxId', async (c) => {
     return c.json({ message: 'Sandbox already terminated' });
   }
 
-  // --- Placeholder for Termination Logic ---
-  // In a real system, this would call a Docker API, Kubernetes API, or a cloud service.
-  // Example implementation outline:
-  // 1. Call container orchestration API to stop and remove container
-  // 2. Clean up any associated resources (volumes, networks, etc.)
-  // 3. Update any monitoring or logging systems
-  console.log(`Terminating sandbox ${sandboxId} (container: ${sandbox.container_id})...`);
-  // --- End of Placeholder ---
+  // Terminate the sandbox using Kubernetes
+  try {
+    await terminateSandbox(sandbox.container_id);
+  } catch (terminationError) {
+    console.error('Failed to terminate sandbox:', terminationError);
+    return c.json({ error: 'Failed to terminate sandbox' }, 500);
+  }
   
   // Update sandbox status in database
   const { error } = await supabase
@@ -1088,6 +1202,22 @@ app.post('/api/workflows/:workflowId/trigger', async (c) => {
 
   const supabase = createSupabaseClient(c.env);
 
+  // Create a workflow run record
+  const { data: workflowRun, error: runError } = await supabase
+    .from('workflow_runs')
+    .insert({
+      workflow_id: workflowId,
+      status: 'RUNNING',
+      trigger_context: context,
+      start_time: new Date().toISOString(),
+    })
+    .select()
+    .single();
+
+  if (runError) {
+    return c.json({ error: 'Failed to create workflow run record' }, 500);
+  }
+
   // Get the first task template in the workflow
   const { data: firstTaskTemplate, error: templateError } = await supabase
     .from('task_templates')
@@ -1123,7 +1253,7 @@ app.post('/api/workflows/:workflowId/trigger', async (c) => {
     ? renderTemplate(firstTaskTemplate.description_template, context)
     : undefined;
 
-  // Create the first task
+  // Create the first task and associate it with the workflow run
   const { data: task, error: taskError } = await supabase
     .from('tasks')
     .insert({
@@ -1131,6 +1261,7 @@ app.post('/api/workflows/:workflowId/trigger', async (c) => {
       description,
       priority: firstTaskTemplate.priority,
       status: 'TODO',
+      workflow_run_id: workflowRun.id, // Associate task with workflow run
     })
     .select()
     .single();
@@ -1141,9 +1272,52 @@ app.post('/api/workflows/:workflowId/trigger', async (c) => {
 
   return c.json({ 
     message: 'Workflow triggered successfully',
-    initialTask: task
+    initialTask: task,
+    workflowRun: workflowRun
   });
 });
 
+// =====================================================
+// Marketplace Implementation
+// =====================================================
+
+// GET /api/marketplace - List/search all items
+app.get('/api/marketplace', async (c) => {
+  const supabase = createSupabaseClient(c.env);
+  // In a real app, add filtering by tags, type, etc.
+  const { data, error } = await supabase.from('marketplace_items').select('*');
+  if (error) return c.json({ error: 'Could not fetch marketplace items' }, 500);
+  return c.json(data);
+});
+
+// POST /api/marketplace - Publish a new item
+app.post('/api/marketplace', async (c) => {
+  // NOTE: This endpoint must be protected by RBAC (supervisor/admin role)
+  const { item_type, name, description, version, tags, repository_url } = await c.req.json();
+  
+  // Add validation logic here...
+  if (!item_type || !name || !version) {
+    return c.json({ error: 'Missing required fields: item_type, name, and version are required' }, 400);
+  }
+  
+  // Validate item_type
+  if (item_type !== 'agent' && item_type !== 'workflow') {
+    return c.json({ error: 'Invalid item_type. Must be either "agent" or "workflow"' }, 400);
+  }
+
+  const supabase = createSupabaseClient(c.env);
+  // Get the publisher_id from the authenticated user session
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return c.json({ error: 'Authentication required' }, 401);
+
+  const { data: newItem, error } = await supabase
+    .from('marketplace_items')
+    .insert({ item_type, name, description, version, tags, repository_url, publisher_id: user.id })
+    .select()
+    .single();
+
+  if (error) return c.json({ error: 'Failed to publish item. Name/version may exist.' }, 500);
+  return c.json(newItem, 201);
+});
 
 export default app;
