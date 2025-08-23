@@ -1,4 +1,4 @@
-# devart.ai - The Autonomous AI Development Platform
+# devart.ai - The Autonomous DevOps Platform
 
 **A serverless, enterprise-ready control plane for orchestrating, supervising, and analyzing a team of autonomous GenAI agents.**
 
@@ -19,6 +19,11 @@ devart.ai has evolved through eight strategic phases from a simple monitoring da
 
 ## ✨ Core Features
 
+### Advanced DevOps Integration
+- **Interactive GitHub Integration**: Automatically create code review tasks from pull requests and post feedback via comments and status checks
+- **Workflow Engine**: Create reusable, multi-stage templates for common CI/CD processes with task chaining
+- **Agent Execution Sandboxing**: Ephemeral, isolated Docker containers for secure task execution
+
 ### Governance & Security
 - **Role-Based Access Control (RBAC)**: Secure platform with admin, supervisor, and viewer roles enforced at database level with RLS
 - **Secure Agent Management**: Onboard agents with secure, hashed API keys and toggle activation status from UI
@@ -28,7 +33,6 @@ devart.ai has evolved through eight strategic phases from a simple monitoring da
 - **Autonomous Agent Lifecycle**: Agents register, claim tasks from priority queue, and report status
 - **Atomic Task Claiming**: Race-condition-free queue system (FOR UPDATE SKIP LOCKED) ensures tasks are never worked on by multiple agents
 - **Task Chaining**: Agents create successor tasks, enabling complex, multi-step workflows
-- **Proactive GitHub Integration**: Automatically create high-priority code review tasks from pull_request webhooks
 
 ### Intelligence & Analytics
 - **Knowledge Base**: pgvector-powered knowledge base allows agents to perform semantic searches for contextual information
@@ -44,11 +48,12 @@ devart.ai has evolved through eight strategic phases from a simple monitoring da
 
 The system is built on a modern, free-tier-friendly, serverless stack designed for scalability and zero operational overhead.
 
-```mermaid
+``mermaid
 graph TD
-    subgraph "Users"
+    subgraph "Users & DevOps"
         Supervisor[Supervisor / Tech Lead]
         Agent[GenAI Agent]
+        DevOps[DevOps Toolchain]
     end
 
     subgraph "devart.ai Platform (Serverless)"
@@ -61,19 +66,21 @@ graph TD
         GitHub[GitHub API & Webhooks]
         OpenAI[OpenAI Embedding API]
         Telegram[Telegram Bot API]
+        ContainerRuntime[Container Runtime e.g., Docker]
     end
 
     Supervisor -- "Manages & Monitors" --> UI
     UI -- "REST API & Realtime" --> DB
     UI -- "API Calls" --> API
 
-    Agent -- "Claims Tasks, Updates Status" --> API
+    Agent -- "Claims Tasks, Updates Status, Requests Sandboxes" --> API
     API -- "CRUD & RPC" --> DB
     API -- "Sends Alerts" --> Telegram
     API -- "Creates Embeddings" --> OpenAI
-    API -- "Receives Webhooks" --> GitHub
-
-    GitHub -- "Sends PR Events" --> API
+    API -- "Manages Containers" --> ContainerRuntime
+    
+    DevOps -- "Triggers Workflows" --> API
+    API -- "Posts Feedback (Comments/Checks)" --> GitHub
 ```
 
 ### Technology Stack
@@ -128,10 +135,40 @@ pnpm install
 - Copy `.env.local.example` to `.env.local` in `apps/ui`
 - Fill in all required keys from Supabase, OpenAI, and Telegram (create a bot via BotFather)
 
-**GitHub Webhook:**
-- In your GitHub repo settings, create a webhook for `pull_request` events
-- Set the payload URL to your deployed API endpoint (`https://<your-worker>/api/webhooks/github`)
-- Set a secure secret and add it to your `apps/api/.env` as `GITHUB_WEBHOOK_SECRET`
+**GitHub Integration:**
+
+To enable full GitHub integration, you'll need to create a GitHub App:
+
+1. **Create a new GitHub App:**
+   - Navigate to your GitHub organization or user settings
+   - Go to Developer settings → GitHub Apps
+   - Click "New GitHub App"
+
+2. **Configure the App:**
+   - Set the "GitHub App name" (e.g., "devart-ai")
+   - Set the "Homepage URL" to your dashboard URL
+   - Set the "Webhook URL" to your deployed API endpoint (`https://<your-worker>/api/webhooks/github`)
+   - Generate and save a secure "Webhook secret"
+   - Under "Repository permissions", enable:
+     - `Pull requests`: Read & write
+     - `Contents`: Read
+   - Under "Subscribe to events", select:
+     - `Pull request`
+
+3. **Generate Credentials:**
+   - Click "Generate a private key" and save the file
+   - Note the "App ID" displayed on the page
+
+4. **Install the App:**
+   - In the app settings, click "Install App"
+   - Select the repositories you want to integrate with
+
+5. **Configure Environment Variables:**
+   - Add the following to your `apps/api/.env`:
+     - `GITHUB_APP_ID` - The App ID from step 3
+     - `GITHUB_PRIVATE_KEY` - The contents of the private key file from step 3
+     - `GITHUB_INSTALLATION_ID` - The installation ID (found in the URL after installing the app)
+     - `GITHUB_WEBHOOK_SECRET` - The webhook secret from step 2
 
 ### 3. Running Locally
 
@@ -166,7 +203,7 @@ pnpm deploy
 
 ### Core Entities
 
-**Agents**: Autonomous workers that register with the platform, claim tasks, and execute them. Managed via secure API keys with hashed storage and activation controls.
+**Agents**: Autonomous workers that register with the platform, claim tasks, and execute them. Managed via secure API keys with hashed storage and activation controls. Agents can request isolated execution environments (sandboxes) for secure task execution.
 
 **Tasks**: Discrete units of work with title, description, priority, and status. Support chaining for complex workflows and automatic creation from GitHub webhooks.
 
@@ -174,10 +211,14 @@ pnpm deploy
 
 **Knowledge Base**: Vector store of documents (ADRs, code snippets, documentation) that agents query for context using semantic search.
 
+**Workflows**: Reusable, multi-stage templates for common CI/CD processes. Workflows define a sequence of task templates that are automatically created as predecessors are completed, enabling complex, multi-step automation processes.
+
+**Sandboxes**: Ephemeral, isolated Docker containers for secure task execution. Agents can request sandboxes for tasks that require isolated environments, ensuring security and preventing interference between tasks.
+
 ### Key Workflows
 
 **Task Dispatch Flow:**
-```mermaid
+``mermaid
 sequenceDiagram
     participant S as Supervisor
     participant UI as Frontend
@@ -198,8 +239,36 @@ sequenceDiagram
     DB->>UI: Real-time status update
 ```
 
-**Budget Supervision Flow:**
+**Agent Task Lifecycle**
+
+The agent task lifecycle defines how agents interact with the platform to claim and process tasks:
+
 ```mermaid
+sequenceDiagram
+    participant Agent
+    participant API
+    participant Database
+
+    loop Work Cycle
+        Agent->>API: POST /api/agents/{agentId}/claim-task
+        API->>Database: RPC claim_next_task()
+        Database-->>API: Returns available task (or null)
+        API-->>Agent: Task JSON (or 404)
+        
+        alt Task Claimed
+            Agent->>Agent: Process Task (Core Logic)
+            Agent->>API: PUT /api/tasks/{taskId}/status (body: {status: "DONE"})
+            API->>Database: UPDATE tasks, UPDATE agents
+            Database-->>API: Success
+            API-->>Agent: 200 OK
+        else No Task Available
+            Agent->>Agent: Wait (e.g., 30 seconds)
+        end
+    end
+```
+
+**Budget Supervision Flow:**
+``mermaid
 sequenceDiagram
     participant A as Agent
     participant API as Backend
@@ -398,17 +467,22 @@ git push origin main
 
 ## 🛣️ Future Roadmap
 
-While the core platform is feature-complete, potential enhancements include:
+The future development of devart.ai is organized into three key focus areas:
 
-**Advanced Analytics**: Grafana integration for time-series dashboards on agent performance, task throughput, and cost trends.
+### Scalability & Performance
+- **Production Sandbox Orchestrator**: Implement a robust container orchestration system for managing agent sandboxes at scale
+- **Materialized Views**: Create optimized views for frequently accessed data to improve query performance
+- **Advanced Job Queue**: Implement a more sophisticated task queue system with features like delayed execution and retries
 
-**Enhanced UI/UX**: Replace browser prompts with modals, dedicated settings page, and enhanced data visualizations.
+### Advanced AI & ML
+- **Self-Healing Agents**: Develop agents that can automatically detect and recover from common errors
+- **Predictive Cost Analysis**: Use machine learning to predict task costs and optimize resource allocation
+- **Workflow Optimization**: Implement AI-driven workflow optimization to automatically improve process efficiency
 
-**Extended Integrations**: Support for GitLab, Bitbucket, and Slack integrations.
-
-**Complex Workflows**: Evolution of task chaining into full DAG (Directed Acyclic Graph) engine for complex collaborative workflows.
-
-**Production Hardening**: Structured logging, distributed tracing (OpenTelemetry), and formal CI/CD deployment pipelines.
+### Ecosystem & Extensibility
+- **Plugin Architecture**: Create a plugin system that allows developers to extend platform functionality
+- **Agent & Workflow Marketplace**: Build a marketplace for sharing and discovering agents and workflows
+- **Multi-Tenancy**: Implement multi-tenancy support to enable hosting multiple teams on a single instance
 
 ## 📚 System Documentation
 
