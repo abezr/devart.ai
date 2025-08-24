@@ -1579,4 +1579,133 @@ app.put('/api/tasks/:taskId/capabilities', async (c) => {
   return c.json(data);
 });
 
+// --- Advanced Trace Anomaly Detection System Endpoints ---
+
+// Import the anomaly detection service
+import { 
+  runAnomalyDetection, 
+  getAnomalyDetectionConfig, 
+  AnomalyDetectionConfig,
+  AnomalyResult
+} from './services/anomalyDetection';
+
+// GET /api/anomalies - Get all detected anomalies
+app.get('/api/anomalies', async (c) => {
+  try {
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase
+      .from('trace_anomalies')
+      .select('*')
+      .order('detected_at', { ascending: false });
+    
+    if (error) {
+      console.error('Error fetching anomalies:', error);
+      return c.json({ error: 'Could not fetch anomalies' }, 500);
+    }
+    
+    return c.json(data || []);
+  } catch (err) {
+    console.error('Unexpected error fetching anomalies:', err);
+    return c.json({ error: 'Failed to fetch anomalies' }, 500);
+  }
+});
+
+// GET /api/anomalies/:id - Get a specific anomaly by ID
+app.get('/api/anomalies/:id', async (c) => {
+  try {
+    const anomalyId = c.req.param('id');
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase
+      .from('trace_anomalies')
+      .select('*')
+      .eq('id', anomalyId)
+      .single();
+    
+    if (error || !data) {
+      return c.json({ error: 'Anomaly not found' }, 404);
+    }
+    
+    return c.json(data);
+  } catch (err) {
+    console.error('Unexpected error fetching anomaly:', err);
+    return c.json({ error: 'Failed to fetch anomaly' }, 500);
+  }
+});
+
+// PUT /api/anomalies/:id/resolve - Mark an anomaly as resolved
+app.put('/api/anomalies/:id/resolve', async (c) => {
+  try {
+    const anomalyId = c.req.param('id');
+    const { resolution_notes } = await c.req.json<{ resolution_notes: string }>();
+    
+    const supabase = createSupabaseClient(c.env);
+    const { data, error } = await supabase
+      .from('trace_anomalies')
+      .update({ 
+        resolved: true, 
+        resolution_notes: resolution_notes || '' 
+      })
+      .eq('id', anomalyId)
+      .select()
+      .single();
+    
+    if (error || !data) {
+      return c.json({ error: 'Anomaly not found or could not be updated' }, 404);
+    }
+    
+    return c.json(data);
+  } catch (err) {
+    console.error('Unexpected error resolving anomaly:', err);
+    return c.json({ error: 'Failed to resolve anomaly' }, 500);
+  }
+});
+
+// GET /api/anomaly-config - Get anomaly detection configuration
+app.get('/api/anomaly-config', async (c) => {
+  try {
+    const config = await getAnomalyDetectionConfig(c.env);
+    return c.json(config);
+  } catch (err) {
+    console.error('Error fetching anomaly detection config:', err);
+    return c.json({ error: 'Failed to fetch configuration' }, 500);
+  }
+});
+
+// PUT /api/anomaly-config - Update anomaly detection configuration
+app.put('/api/anomaly-config', async (c) => {
+  try {
+    const newConfig: AnomalyDetectionConfig = await c.req.json();
+    
+    const supabase = createSupabaseClient(c.env);
+    
+    // Update each configuration value
+    for (const [key, value] of Object.entries(newConfig)) {
+      const configKey = key as keyof AnomalyDetectionConfig;
+      const configValue = value as any;
+      
+      await supabase
+        .from('anomaly_detection_config')
+        .update({ config_value: configValue })
+        .eq('config_key', configKey);
+    }
+    
+    return c.json({ message: 'Configuration updated successfully' });
+  } catch (err) {
+    console.error('Error updating anomaly detection config:', err);
+    return c.json({ error: 'Failed to update configuration' }, 500);
+  }
+});
+
+// POST /api/anomaly-detection/run - Manually trigger anomaly detection
+app.post('/api/anomaly-detection/run', async (c) => {
+  try {
+    // In a real implementation, this would be protected by authentication
+    await runAnomalyDetection(c.env);
+    return c.json({ message: 'Anomaly detection pipeline started successfully' });
+  } catch (err) {
+    console.error('Error running anomaly detection:', err);
+    return c.json({ error: 'Failed to run anomaly detection' }, 500);
+  }
+});
+
 export default app;

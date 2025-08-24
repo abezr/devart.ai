@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { useEffect } from "react";
+import Navigation from "../components/Navigation";
 
 export const metadata: Metadata = {
   title: "devart.ai Dashboard",
@@ -26,7 +27,12 @@ export default function RootLayout({
 
   return (
     <html lang="en">
-      <body className="bg-gray-900 text-white">{children}</body>
+      <body className="bg-gray-900 text-white">
+        <Navigation />
+        <div className="min-h-screen">
+          {children}
+        </div>
+      </body>
     </html>
   );
 }

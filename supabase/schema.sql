@@ -678,3 +678,71 @@ CREATE TRIGGER agents_activity_trigger
 CREATE TRIGGER service_registry_activity_trigger
   AFTER UPDATE ON service_registry
   FOR EACH ROW EXECUTE PROCEDURE log_activity();
+
+-- =====================================================
+-- Advanced Trace Anomaly Detection System
+-- =====================================================
+
+-- Anomaly detection results
+CREATE TABLE trace_anomalies (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trace_id TEXT NOT NULL,
+  span_id TEXT,
+  anomaly_type TEXT NOT NULL, -- 'PERFORMANCE', 'SECURITY', 'RESOURCE'
+  anomaly_subtype TEXT, -- Specific type of anomaly
+  severity TEXT NOT NULL, -- 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'
+  description TEXT,
+  detected_at TIMESTAMPTZ DEFAULT NOW(),
+  resolved BOOLEAN DEFAULT FALSE,
+  resolution_notes TEXT
+);
+
+COMMENT ON TABLE trace_anomalies IS 'Stores detected trace anomalies for analysis and alerting.';
+COMMENT ON COLUMN trace_anomalies.trace_id IS 'The ID of the trace where the anomaly was detected.';
+COMMENT ON COLUMN trace_anomalies.span_id IS 'The ID of the specific span where the anomaly occurred.';
+COMMENT ON COLUMN trace_anomalies.anomaly_type IS 'The category of the anomaly: PERFORMANCE, SECURITY, or RESOURCE.';
+COMMENT ON COLUMN trace_anomalies.anomaly_subtype IS 'The specific type of anomaly within the category.';
+COMMENT ON COLUMN trace_anomalies.severity IS 'The severity level of the anomaly.';
+COMMENT ON COLUMN trace_anomalies.description IS 'Detailed description of the detected anomaly.';
+COMMENT ON COLUMN trace_anomalies.detected_at IS 'Timestamp when the anomaly was detected.';
+COMMENT ON COLUMN trace_anomalies.resolved IS 'Whether the anomaly has been resolved.';
+COMMENT ON COLUMN trace_anomalies.resolution_notes IS 'Notes about how the anomaly was resolved.';
+
+-- Anomaly detection configuration
+CREATE TABLE anomaly_detection_config (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  config_key TEXT NOT NULL UNIQUE,
+  config_value JSONB,
+  description TEXT
+);
+
+COMMENT ON TABLE anomaly_detection_config IS 'Configuration settings for the anomaly detection system.';
+COMMENT ON COLUMN anomaly_detection_config.config_key IS 'Unique identifier for the configuration setting.';
+COMMENT ON COLUMN anomaly_detection_config.config_value IS 'JSONB value allowing flexible configuration data types.';
+COMMENT ON COLUMN anomaly_detection_config.description IS 'Human-readable description of what this setting controls.';
+
+-- Add indexes for efficient querying
+CREATE INDEX idx_trace_anomalies_type ON trace_anomalies(anomaly_type);
+CREATE INDEX idx_trace_anomalies_severity ON trace_anomalies(severity);
+CREATE INDEX idx_trace_anomalies_detected ON trace_anomalies(detected_at);
+
+-- Enable RLS on trace_anomalies
+ALTER TABLE trace_anomalies ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow supervisors and admins to manage anomalies" ON trace_anomalies
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+CREATE POLICY "Allow viewers to read anomalies" ON trace_anomalies
+  FOR SELECT USING (get_my_role() = 'viewer');
+
+-- Enable RLS on anomaly_detection_config
+ALTER TABLE anomaly_detection_config ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow supervisors and admins to manage config" ON anomaly_detection_config
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+CREATE POLICY "Allow viewers to read config" ON anomaly_detection_config
+  FOR SELECT USING (get_my_role() = 'viewer');
+
+-- Insert default configuration values
+INSERT INTO anomaly_detection_config (config_key, config_value, description) VALUES
+('latency_threshold_stddev', '3.0', 'Number of standard deviations above average latency to flag as anomaly'),
+('error_rate_threshold', '0.05', 'Error rate threshold (5%) to flag as anomaly'),
+('sampling_enabled', 'true', 'Whether to enable sampling for anomaly detection'),
+('sampling_ratio', '0.1', 'Ratio of traces to sample for anomaly detection (10%)');

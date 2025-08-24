@@ -11,6 +11,7 @@ import AgentRegistrationPanel from '../components/AgentRegistrationPanel';
 import SettingsPanel from '../components/SettingsPanel';
 import WorkflowManagementPanel from '../components/WorkflowManagementPanel';
 import ActivityFeedPanel from '../components/ActivityFeedPanel';
+import AnomalyAlertPanel from '../components/AnomalyAlertPanel';
 
 /**
  * Interface matching the Task database table structure
@@ -168,6 +169,7 @@ export default async function HomePage() {
 
         {/* Right Column - Monitoring & Management Panels */}
         <div className="space-y-8">
+          <AnomalyAlertPanel />
           <ServiceStatusPanel initialServices={initialServices} />
           <AgentMonitoringPanel initialAgents={initialAgents} />
           <TaskAnalyticsPanel />
