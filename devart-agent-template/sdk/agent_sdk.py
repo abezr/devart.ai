@@ -6,7 +6,7 @@ import json
 import threading
 from typing import Callable, Dict, Any, List
 from functools import wraps
-from opentelemetry import trace
+from otel_utils import get_tracer
 from opentelemetry.instrumentation.pika import PikaInstrumentor
 
 class AgentSDK:
@@ -52,7 +52,7 @@ class AgentSDK:
             
             def on_message(channel, method, properties, body):
                 # Create a span for message processing
-                tracer = trace.get_tracer(__name__)
+                tracer = get_tracer()
                 with tracer.start_as_current_span("process_rabbitmq_message", attributes={
                     "messaging.system": "rabbitmq",
                     "messaging.destination": method.routing_key,
@@ -347,5 +347,92 @@ class AgentSDK:
         else:
             print(f"No solutions found for task {task_id}")
             return False
+
+    # =====================================================
+    # Generative Remediation Methods
+    # =====================================================
+
+    def request_generative_remediation(self, anomaly_id: str, root_cause_analysis: Dict) -> Dict:
+        """
+        Request generative remediation from the API.
+        
+        Args:
+            anomaly_id: The ID of the anomaly
+            root_cause_analysis: The RCA findings
+            
+        Returns:
+            Dict: The generated remediation script
+        """
+        url = f"{self.api_base_url}/api/generative-remediation/generate"
+        payload = {
+            "anomaly_id": anomaly_id,
+            "root_cause_analysis": root_cause_analysis
+        }
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error requesting generative remediation: {e}")
+            return {}
+
+    def validate_script(self, script_id: str) -> Dict:
+        """
+        Validate a generated script.
+        
+        Args:
+            script_id: The ID of the script to validate
+            
+        Returns:
+            Dict: Validation result
+        """
+        url = f"{self.api_base_url}/api/generative-remediation/scripts/{script_id}/validate"
+        
+        try:
+            response = requests.post(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error validating script: {e}")
+            return {}
+
+    def execute_script(self, script_id: str) -> Dict:
+        """
+        Execute a validated script.
+        
+        Args:
+            script_id: The ID of the script to execute
+            
+        Returns:
+            Dict: Execution result
+        """
+        url = f"{self.api_base_url}/api/generative-remediation/scripts/{script_id}/execute"
+        
+        try:
+            response = requests.post(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error executing script: {e}")
+            return {}
+
+    def get_approved_scripts(self) -> List[Dict]:
+        """
+        Get approved scripts for execution.
+        
+        Returns:
+            List[Dict]: List of approved scripts
+        """
+        url = f"{self.api_base_url}/api/generative-remediation/scripts"
+        params = {"approval_status": "APPROVED"}
+        
+        try:
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            print(f"Error fetching approved scripts: {e}")
+            return []
 
     # Add other methods like `log_usage`, `create_successor`, etc.

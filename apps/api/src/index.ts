@@ -14,6 +14,18 @@ import { provisionSandbox, terminateSandbox } from './services/kubernetes';
 import { searchKnowledge } from './services/knowledge';
 import { rateLimitKnowledgeQueries, validateKnowledgeSearchRequest } from './lib/knowledgeMiddleware';
 
+// Import remediation service functions
+import {
+  getRemediationActions,
+  getActiveRemediationActionsByCategory,
+  createRemediationAction,
+  updateRemediationAction,
+  deleteRemediationAction,
+  getRemediationLogs,
+  executeRemediationAction,
+  shouldExecuteAutomatically
+} from './services/remediation';
+
 // Import OpenTelemetry initialization
 import { initializeOpenTelemetry } from './lib/opentelemetry';
 
@@ -1705,6 +1717,349 @@ app.post('/api/anomaly-detection/run', async (c) => {
   } catch (err) {
     console.error('Error running anomaly detection:', err);
     return c.json({ error: 'Failed to run anomaly detection' }, 500);
+  }
+});
+
+// Automated Remediation Endpoints
+
+// GET /api/remediation-actions - Retrieve all remediation actions
+app.get('/api/remediation-actions', async (c) => {
+  try {
+    const actions = await getRemediationActions(c.env);
+    return c.json(actions);
+  } catch (err) {
+    console.error('Error fetching remediation actions:', err);
+    return c.json({ error: 'Failed to fetch remediation actions' }, 500);
+  }
+});
+
+// POST /api/remediation-actions - Create a new remediation action
+app.post('/api/remediation-actions', async (c) => {
+  try {
+    const actionData = await c.req.json();
+    
+    // Validate required fields
+    if (!actionData.root_cause_category || !actionData.action_type || !actionData.confidence_threshold) {
+      return c.json({ error: 'Missing required fields' }, 400);
+    }
+    
+    const action = await createRemediationAction(c.env, actionData);
+    return c.json(action, 201);
+  } catch (err) {
+    console.error('Error creating remediation action:', err);
+    return c.json({ error: 'Failed to create remediation action' }, 500);
+  }
+});
+
+// PUT /api/remediation-actions/:id - Update a remediation action
+app.put('/api/remediation-actions/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const updates = await c.req.json();
+    
+    const action = await updateRemediationAction(c.env, id, updates);
+    return c.json(action);
+  } catch (err) {
+    console.error('Error updating remediation action:', err);
+    return c.json({ error: 'Failed to update remediation action' }, 500);
+  }
+});
+
+// DELETE /api/remediation-actions/:id - Delete a remediation action
+app.delete('/api/remediation-actions/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    await deleteRemediationAction(c.env, id);
+    return c.json({ message: 'Remediation action deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting remediation action:', err);
+    return c.json({ error: 'Failed to delete remediation action' }, 500);
+  }
+});
+
+// GET /api/remediation-logs - Retrieve remediation execution logs
+app.get('/api/remediation-logs', async (c) => {
+  try {
+    const limit = parseInt(c.req.query('limit') || '50');
+    const logs = await getRemediationLogs(c.env, limit);
+    return c.json(logs);
+  } catch (err) {
+    console.error('Error fetching remediation logs:', err);
+    return c.json({ error: 'Failed to fetch remediation logs' }, 500);
+  }
+});
+
+// POST /api/remediation/execute - Manually trigger a remediation action
+app.post('/api/remediation/execute', async (c) => {
+  try {
+    const { action_id } = await c.req.json();
+    
+    if (!action_id) {
+      return c.json({ error: 'Action ID is required' }, 400);
+    }
+    
+    // Fetch the action
+    const supabase = createSupabaseClient(c.env);
+    const { data: action, error } = await supabase
+      .from('remediation_actions')
+      .select('*')
+      .eq('id', action_id)
+      .single();
+    
+    if (error || !action) {
+      return c.json({ error: 'Remediation action not found' }, 404);
+    }
+    
+    // Execute the action
+    const result = await executeRemediationAction(c.env, action, 'MANUAL');
+    return c.json(result);
+  } catch (err) {
+    console.error('Error executing remediation action:', err);
+    return c.json({ error: 'Failed to execute remediation action' }, 500);
+  }
+});
+
+// =====================================================
+// Generative Remediation Script Generator Endpoints
+// =====================================================
+
+// Import generative remediation service functions
+import {
+  getGenerativeRemediationScripts,
+  getGenerativeRemediationScriptById,
+  createGenerativeRemediationScript,
+  updateGenerativeRemediationScript,
+  deleteGenerativeRemediationScript,
+  getGenerativeRemediationTemplates,
+  getGenerativeRemediationTemplateById,
+  createGenerativeRemediationTemplate,
+  updateGenerativeRemediationTemplate,
+  deleteGenerativeRemediationTemplate,
+  selectTemplateForRootCause,
+  generateRemediationScript,
+  validateScript,
+  approveScript,
+  rejectScript,
+  executeScript
+} from './services/generativeRemediation';
+
+// POST /api/generative-remediation/generate - Generate a remediation script from RCA findings
+app.post('/api/generative-remediation/generate', async (c) => {
+  try {
+    const { anomaly_id, root_cause_analysis } = await c.req.json<{
+      anomaly_id: string;
+      root_cause_analysis: any;
+    }>();
+    
+    if (!anomaly_id || !root_cause_analysis) {
+      return c.json({ error: 'Missing required fields: anomaly_id and root_cause_analysis' }, 400);
+    }
+    
+    // Select the best template for the root cause category
+    const template = await selectTemplateForRootCause(c.env, root_cause_analysis.root_cause_category);
+    
+    if (!template) {
+      return c.json({ error: 'No template found for the given root cause category' }, 404);
+    }
+    
+    // Generate the remediation script
+    const { script, confidenceScore } = await generateRemediationScript(
+      c.env,
+      anomaly_id,
+      root_cause_analysis,
+      template
+    );
+    
+    // Create a new script record
+    const newScript = await createGenerativeRemediationScript(c.env, {
+      anomaly_id,
+      root_cause_analysis,
+      generated_script: script,
+      script_language: 'bash', // Default to bash, but this should be determined by the template
+      target_system: template.target_systems[0] || 'unknown',
+      confidence_score: confidenceScore,
+      validation_status: 'PENDING',
+      execution_status: 'PENDING',
+      approval_status: confidenceScore > 0.8 ? 'APPROVED' : 'REQUIRED' // Auto-approve high confidence scripts
+    });
+    
+    return c.json(newScript, 201);
+  } catch (err) {
+    console.error('Error generating remediation script:', err);
+    return c.json({ error: 'Failed to generate remediation script' }, 500);
+  }
+});
+
+// GET /api/generative-remediation/scripts - Retrieve generated scripts with filtering
+app.get('/api/generative-remediation/scripts', async (c) => {
+  try {
+    const scripts = await getGenerativeRemediationScripts(c.env);
+    return c.json(scripts);
+  } catch (err) {
+    console.error('Error fetching generative remediation scripts:', err);
+    return c.json({ error: 'Failed to fetch generative remediation scripts' }, 500);
+  }
+});
+
+// GET /api/generative-remediation/scripts/:id - Retrieve a specific generated script
+app.get('/api/generative-remediation/scripts/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const script = await getGenerativeRemediationScriptById(c.env, id);
+    
+    if (!script) {
+      return c.json({ error: 'Script not found' }, 404);
+    }
+    
+    return c.json(script);
+  } catch (err) {
+    console.error('Error fetching generative remediation script:', err);
+    return c.json({ error: 'Failed to fetch generative remediation script' }, 500);
+  }
+});
+
+// POST /api/generative-remediation/scripts/:id/validate - Validate a generated script
+app.post('/api/generative-remediation/scripts/:id/validate', async (c) => {
+  try {
+    const id = c.req.param('id');
+    
+    // Get the script
+    const script = await getGenerativeRemediationScriptById(c.env, id);
+    
+    if (!script) {
+      return c.json({ error: 'Script not found' }, 404);
+    }
+    
+    // Validate the script
+    const validationResult = await validateScript(
+      c.env,
+      script.generated_script,
+      script.target_system
+    );
+    
+    // Update the script with validation results
+    const updatedScript = await updateGenerativeRemediationScript(c.env, id, {
+      validation_status: validationResult.isValid ? 'PASSED' : 'FAILED',
+      validated_at: new Date().toISOString()
+    });
+    
+    return c.json({
+      script: updatedScript,
+      validation: validationResult
+    });
+  } catch (err) {
+    console.error('Error validating generative remediation script:', err);
+    return c.json({ error: 'Failed to validate generative remediation script' }, 500);
+  }
+});
+
+// POST /api/generative-remediation/scripts/:id/approve - Approve a script for execution
+app.post('/api/generative-remediation/scripts/:id/approve', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const script = await approveScript(c.env, id);
+    return c.json(script);
+  } catch (err) {
+    console.error('Error approving generative remediation script:', err);
+    return c.json({ error: 'Failed to approve generative remediation script' }, 500);
+  }
+});
+
+// POST /api/generative-remediation/scripts/:id/reject - Reject a script
+app.post('/api/generative-remediation/scripts/:id/reject', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const script = await rejectScript(c.env, id);
+    return c.json(script);
+  } catch (err) {
+    console.error('Error rejecting generative remediation script:', err);
+    return c.json({ error: 'Failed to reject generative remediation script' }, 500);
+  }
+});
+
+// POST /api/generative-remediation/scripts/:id/execute - Execute a validated script
+app.post('/api/generative-remediation/scripts/:id/execute', async (c) => {
+  try {
+    const id = c.req.param('id');
+    
+    // Get the script to verify it's approved and validated
+    const script = await getGenerativeRemediationScriptById(c.env, id);
+    
+    if (!script) {
+      return c.json({ error: 'Script not found' }, 404);
+    }
+    
+    // Check if script is approved
+    if (script.approval_status !== 'APPROVED') {
+      return c.json({ error: 'Script must be approved before execution' }, 400);
+    }
+    
+    // Check if script has passed validation
+    if (script.validation_status !== 'PASSED') {
+      return c.json({ error: 'Script must pass validation before execution' }, 400);
+    }
+    
+    // Execute the script
+    const result = await executeScript(c.env, id);
+    return c.json(result);
+  } catch (err) {
+    console.error('Error executing generative remediation script:', err);
+    return c.json({ error: 'Failed to execute generative remediation script' }, 500);
+  }
+});
+
+// GET /api/generative-remediation/templates - Retrieve script templates
+app.get('/api/generative-remediation/templates', async (c) => {
+  try {
+    const templates = await getGenerativeRemediationTemplates(c.env);
+    return c.json(templates);
+  } catch (err) {
+    console.error('Error fetching generative remediation templates:', err);
+    return c.json({ error: 'Failed to fetch generative remediation templates' }, 500);
+  }
+});
+
+// POST /api/generative-remediation/templates - Create a new script template (supervisor role required)
+app.post('/api/generative-remediation/templates', async (c) => {
+  try {
+    const templateData = await c.req.json();
+    
+    // Validate required fields
+    if (!templateData.root_cause_category || !templateData.template_content) {
+      return c.json({ error: 'Missing required fields' }, 400);
+    }
+    
+    const template = await createGenerativeRemediationTemplate(c.env, templateData);
+    return c.json(template, 201);
+  } catch (err) {
+    console.error('Error creating generative remediation template:', err);
+    return c.json({ error: 'Failed to create generative remediation template' }, 500);
+  }
+});
+
+// PUT /api/generative-remediation/templates/:id - Update a script template (supervisor role required)
+app.put('/api/generative-remediation/templates/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const updates = await c.req.json();
+    
+    const template = await updateGenerativeRemediationTemplate(c.env, id, updates);
+    return c.json(template);
+  } catch (err) {
+    console.error('Error updating generative remediation template:', err);
+    return c.json({ error: 'Failed to update generative remediation template' }, 500);
+  }
+});
+
+// DELETE /api/generative-remediation/templates/:id - Delete a script template (supervisor role required)
+app.delete('/api/generative-remediation/templates/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    await deleteGenerativeRemediationTemplate(c.env, id);
+    return c.json({ message: 'Template deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting generative remediation template:', err);
+    return c.json({ error: 'Failed to delete generative remediation template' }, 500);
   }
 });
 

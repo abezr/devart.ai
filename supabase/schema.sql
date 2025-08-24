@@ -785,3 +785,156 @@ INSERT INTO anomaly_detection_config (config_key, config_value, description) VAL
 ('error_rate_threshold', '0.05', 'Error rate threshold (5%) to flag as anomaly'),
 ('sampling_enabled', 'true', 'Whether to enable sampling for anomaly detection'),
 ('sampling_ratio', '0.1', 'Ratio of traces to sample for anomaly detection (10%)');
+
+-- =====================================================
+-- Automated Remediation System Tables
+-- =====================================================
+
+-- Remediation Actions Table
+-- Stores predefined remediation actions for automated response to RCA findings
+CREATE TABLE remediation_actions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  root_cause_category TEXT NOT NULL,
+  root_cause_details TEXT,
+  action_type TEXT NOT NULL, -- 'ROLLBACK', 'RESTART', 'SCALE', 'NOTIFY'
+  action_parameters JSONB,
+  confidence_threshold TEXT NOT NULL, -- 'HIGH', 'MEDIUM', 'LOW'
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+COMMENT ON TABLE remediation_actions IS 'Stores predefined remediation actions for automated response to RCA findings.';
+COMMENT ON COLUMN remediation_actions.root_cause_category IS 'The category of root cause this action applies to.';
+COMMENT ON COLUMN remediation_actions.root_cause_details IS 'Specific details about the root cause pattern.';
+COMMENT ON COLUMN remediation_actions.action_type IS 'The type of remediation action to execute.';
+COMMENT ON COLUMN remediation_actions.action_parameters IS 'Parameters for the remediation action in JSON format.';
+COMMENT ON COLUMN remediation_actions.confidence_threshold IS 'Minimum confidence level required to execute this action automatically.';
+COMMENT ON COLUMN remediation_actions.is_active IS 'Whether this remediation action is currently active.';
+COMMENT ON COLUMN remediation_actions.created_at IS 'Timestamp when the action was created.';
+COMMENT ON COLUMN remediation_actions.updated_at IS 'Timestamp when the action was last updated.';
+
+-- Remediation Execution Log Table
+-- Tracks executed remediation actions for audit purposes
+CREATE TABLE remediation_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  anomaly_id UUID REFERENCES trace_anomalies(id),
+  action_id UUID REFERENCES remediation_actions(id),
+  execution_status TEXT NOT NULL, -- 'SUCCESS', 'FAILED', 'PARTIAL'
+  execution_result JSONB,
+  executed_at TIMESTAMPTZ DEFAULT NOW(),
+  executed_by TEXT -- 'AUTOMATED', 'MANUAL'
+);
+
+COMMENT ON TABLE remediation_logs IS 'Tracks executed remediation actions for audit purposes.';
+COMMENT ON COLUMN remediation_logs.anomaly_id IS 'Reference to the anomaly that triggered this remediation.';
+COMMENT ON COLUMN remediation_logs.action_id IS 'Reference to the remediation action that was executed.';
+COMMENT ON COLUMN remediation_logs.execution_status IS 'Status of the remediation execution.';
+COMMENT ON COLUMN remediation_logs.execution_result IS 'Detailed results of the remediation execution.';
+COMMENT ON COLUMN remediation_logs.executed_at IS 'Timestamp when the remediation was executed.';
+COMMENT ON COLUMN remediation_logs.executed_by IS 'Whether the action was executed automatically or manually.';
+
+-- Add indexes for efficient querying
+CREATE INDEX idx_remediation_actions_category ON remediation_actions(root_cause_category);
+CREATE INDEX idx_remediation_actions_type ON remediation_actions(action_type);
+CREATE INDEX idx_remediation_actions_active ON remediation_actions(is_active);
+CREATE INDEX idx_remediation_logs_anomaly ON remediation_logs(anomaly_id);
+CREATE INDEX idx_remediation_logs_action ON remediation_logs(action_id);
+CREATE INDEX idx_remediation_logs_status ON remediation_logs(execution_status);
+CREATE INDEX idx_remediation_logs_executed ON remediation_logs(executed_at);
+
+-- Enable RLS on remediation_actions
+ALTER TABLE remediation_actions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow supervisors and admins to manage actions" ON remediation_actions
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+CREATE POLICY "Allow viewers to read active actions" ON remediation_actions
+  FOR SELECT USING (get_my_role() = 'viewer' AND is_active = TRUE);
+
+-- Enable RLS on remediation_logs
+ALTER TABLE remediation_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow supervisors and admins to manage logs" ON remediation_logs
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+CREATE POLICY "Allow viewers to read logs" ON remediation_logs
+  FOR SELECT USING (get_my_role() = 'viewer');
+
+-- =====================================================
+-- Generative Remediation Script Generator Tables
+-- =====================================================
+
+-- Generative Remediation Scripts Table
+-- Stores generated remediation scripts for audit and potential reuse
+CREATE TABLE generative_remediation_scripts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  anomaly_id UUID REFERENCES trace_anomalies(id),
+  root_cause_analysis JSONB, -- The RCA findings that informed script generation
+  generated_script TEXT, -- The generated remediation script
+  script_language TEXT, -- Language/runtime of the script (bash, python, etc.)
+  target_system TEXT, -- System the script targets (kubernetes, database, etc.)
+  confidence_score NUMERIC, -- Confidence score of the generation (0.0-1.0)
+  validation_status TEXT DEFAULT 'PENDING', -- Status of validation checks (PENDING, PASSED, FAILED)
+  execution_status TEXT DEFAULT 'PENDING', -- Status of script execution (PENDING, RUNNING, SUCCESS, FAILED)
+  approval_status TEXT DEFAULT 'REQUIRED', -- Supervisor approval status (REQUIRED, APPROVED, REJECTED)
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  validated_at TIMESTAMPTZ,
+  executed_at TIMESTAMPTZ,
+  approved_at TIMESTAMPTZ
+);
+
+COMMENT ON TABLE generative_remediation_scripts IS 'Stores generated remediation scripts for audit and potential reuse.';
+COMMENT ON COLUMN generative_remediation_scripts.anomaly_id IS 'Reference to the anomaly that triggered generation.';
+COMMENT ON COLUMN generative_remediation_scripts.root_cause_analysis IS 'The RCA findings that informed script generation.';
+COMMENT ON COLUMN generative_remediation_scripts.generated_script IS 'The generated remediation script.';
+COMMENT ON COLUMN generative_remediation_scripts.script_language IS 'Language/runtime of the script (bash, python, etc.).';
+COMMENT ON COLUMN generative_remediation_scripts.target_system IS 'System the script targets (kubernetes, database, etc.).';
+COMMENT ON COLUMN generative_remediation_scripts.confidence_score IS 'Confidence score of the generation (0.0-1.0).';
+COMMENT ON COLUMN generative_remediation_scripts.validation_status IS 'Status of validation checks (PENDING, PASSED, FAILED).';
+COMMENT ON COLUMN generative_remediation_scripts.execution_status IS 'Status of script execution (PENDING, RUNNING, SUCCESS, FAILED).';
+COMMENT ON COLUMN generative_remediation_scripts.approval_status IS 'Supervisor approval status (REQUIRED, APPROVED, REJECTED).';
+
+-- Add indexes for efficient querying
+CREATE INDEX idx_generative_remediation_scripts_anomaly ON generative_remediation_scripts(anomaly_id);
+CREATE INDEX idx_generative_remediation_scripts_validation ON generative_remediation_scripts(validation_status);
+CREATE INDEX idx_generative_remediation_scripts_execution ON generative_remediation_scripts(execution_status);
+CREATE INDEX idx_generative_remediation_scripts_approval ON generative_remediation_scripts(approval_status);
+CREATE INDEX idx_generative_remediation_scripts_created ON generative_remediation_scripts(created_at);
+
+-- Enable RLS on generative_remediation_scripts
+ALTER TABLE generative_remediation_scripts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow supervisors and admins to manage scripts" ON generative_remediation_scripts
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+CREATE POLICY "Allow viewers to read scripts" ON generative_remediation_scripts
+  FOR SELECT USING (get_my_role() = 'viewer');
+
+-- Generative Remediation Templates Table
+-- Stores templates used for generating remediation scripts
+CREATE TABLE generative_remediation_templates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  root_cause_category TEXT NOT NULL, -- Category of root cause this template addresses
+  template_content TEXT NOT NULL, -- Template for script generation with variable placeholders
+  target_systems TEXT[], -- Systems this template can target
+  required_capabilities JSONB, -- Agent capabilities required to execute (JSONB for GIN indexing)
+  safety_checks JSONB, -- Required safety checks before execution
+  template_variables JSONB, -- Definition of variables used in template
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+COMMENT ON TABLE generative_remediation_templates IS 'Stores templates used for generating remediation scripts.';
+COMMENT ON COLUMN generative_remediation_templates.root_cause_category IS 'Category of root cause this template addresses.';
+COMMENT ON COLUMN generative_remediation_templates.template_content IS 'Template for script generation with variable placeholders.';
+COMMENT ON COLUMN generative_remediation_templates.target_systems IS 'Systems this template can target.';
+COMMENT ON COLUMN generative_remediation_templates.required_capabilities IS 'Agent capabilities required to execute (JSONB for GIN indexing).';
+COMMENT ON COLUMN generative_remediation_templates.safety_checks IS 'Required safety checks before execution.';
+COMMENT ON COLUMN generative_remediation_templates.template_variables IS 'Definition of variables used in template.';
+
+-- Add indexes for efficient querying
+CREATE INDEX idx_generative_remediation_templates_category ON generative_remediation_templates(root_cause_category);
+CREATE INDEX idx_generative_remediation_templates_capabilities ON generative_remediation_templates USING GIN (required_capabilities);
+CREATE INDEX idx_generative_remediation_templates_systems ON generative_remediation_templates USING GIN (target_systems);
+
+-- Enable RLS on generative_remediation_templates
+ALTER TABLE generative_remediation_templates ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow supervisors and admins to manage templates" ON generative_remediation_templates
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+CREATE POLICY "Allow viewers to read templates" ON generative_remediation_templates
+  FOR SELECT USING (get_my_role() = 'viewer');
