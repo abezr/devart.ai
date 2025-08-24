@@ -1,4 +1,5 @@
 import amqp from 'amqplib';
+import { trace, SpanStatusCode } from '@opentelemetry/api';
 
 let connection: amqp.Connection | null = null;
 let channel: amqp.Channel | null = null;
@@ -58,12 +59,84 @@ async function getRabbitMQConnection() {
  * @param delayMs Optional delay in milliseconds before the task should be processed
  */
 export async function publishTask(taskId: string, delayMs?: number): Promise<void> {
-  try {
-    const { channel } = await getRabbitMQConnection();
-    const queueName = process.env.RABBITMQ_TASKS_QUEUE || 'tasks.todo';
-    
-    if (delayMs && delayMs > 0) {
-      // Publish with delay
+  const tracer = trace.getTracer('rabbitmq-service');
+  
+  return tracer.startActiveSpan('publishTask', {
+    attributes: {
+      'messaging.system': 'rabbitmq',
+      'messaging.destination': process.env.RABBITMQ_TASKS_QUEUE || 'tasks.todo',
+      'task.id': taskId,
+      'task.delay_ms': delayMs || 0,
+    }
+  }, async (span) => {
+    try {
+      const { channel } = await getRabbitMQConnection();
+      const queueName = process.env.RABBITMQ_TASKS_QUEUE || 'tasks.todo';
+      
+      if (delayMs && delayMs > 0) {
+        // Publish with delay
+        if (process.env.RABBITMQ_DELAYED_EXCHANGE === 'true') {
+          // Use delayed message exchange plugin
+          channel.publish('tasks.delayed', 'task', Buffer.from(taskId), {
+            persistent: true,
+            headers: {
+              'x-delay': delayMs
+            }
+          });
+        } else {
+          // Fallback to simple delayed republishing
+          const message = JSON.stringify({
+            taskId,
+            delayUntil: Date.now() + delayMs
+          });
+          
+          channel.sendToQueue(queueName, Buffer.from(message), {
+            persistent: true
+          });
+        }
+        
+        console.log(`Published task ${taskId} to queue ${queueName} with delay ${delayMs}ms`);
+      } else {
+        // Publish immediately
+        channel.sendToQueue(queueName, Buffer.from(taskId), {
+          persistent: true // Make the message persistent
+        });
+        
+        console.log(`Published task ${taskId} to queue ${queueName}`);
+      }
+    } catch (error) {
+      console.error('Failed to publish task to RabbitMQ:', error);
+      span.recordException(error as Error);
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: `Failed to publish task ${taskId} to RabbitMQ: ${error}`
+      });
+      throw new Error(`Failed to publish task ${taskId} to RabbitMQ: ${error}`);
+    } finally {
+      span.end();
+    }
+  });
+}
+
+/**
+ * Republish a task to the RabbitMQ queue with a delay
+ * @param taskId The ID of the task to republish
+ * @param delayMs The delay in milliseconds before the task should be processed
+ */
+export async function republishTaskWithDelay(taskId: string, delayMs: number = 5000): Promise<void> {
+  const tracer = trace.getTracer('rabbitmq-service');
+  
+  return tracer.startActiveSpan('republishTaskWithDelay', {
+    attributes: {
+      'messaging.system': 'rabbitmq',
+      'messaging.destination': process.env.RABBITMQ_TASKS_QUEUE || 'tasks.todo',
+      'task.id': taskId,
+      'task.delay_ms': delayMs,
+    }
+  }, async (span) => {
+    try {
+      const { channel } = await getRabbitMQConnection();
+      
       if (process.env.RABBITMQ_DELAYED_EXCHANGE === 'true') {
         // Use delayed message exchange plugin
         channel.publish('tasks.delayed', 'task', Buffer.from(taskId), {
@@ -79,61 +152,25 @@ export async function publishTask(taskId: string, delayMs?: number): Promise<voi
           delayUntil: Date.now() + delayMs
         });
         
+        const queueName = process.env.RABBITMQ_TASKS_QUEUE || 'tasks.todo';
         channel.sendToQueue(queueName, Buffer.from(message), {
           persistent: true
         });
       }
       
-      console.log(`Published task ${taskId} to queue ${queueName} with delay ${delayMs}ms`);
-    } else {
-      // Publish immediately
-      channel.sendToQueue(queueName, Buffer.from(taskId), {
-        persistent: true // Make the message persistent
+      console.log(`Republished task ${taskId} with delay ${delayMs}ms`);
+    } catch (error) {
+      console.error('Failed to republish task to RabbitMQ:', error);
+      span.recordException(error as Error);
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: `Failed to republish task ${taskId} to RabbitMQ: ${error}`
       });
-      
-      console.log(`Published task ${taskId} to queue ${queueName}`);
+      throw new Error(`Failed to republish task ${taskId} to RabbitMQ: ${error}`);
+    } finally {
+      span.end();
     }
-  } catch (error) {
-    console.error('Failed to publish task to RabbitMQ:', error);
-    throw new Error(`Failed to publish task ${taskId} to RabbitMQ: ${error}`);
-  }
-}
-
-/**
- * Republish a task to the RabbitMQ queue with a delay
- * @param taskId The ID of the task to republish
- * @param delayMs The delay in milliseconds before the task should be processed
- */
-export async function republishTaskWithDelay(taskId: string, delayMs: number = 5000): Promise<void> {
-  try {
-    const { channel } = await getRabbitMQConnection();
-    
-    if (process.env.RABBITMQ_DELAYED_EXCHANGE === 'true') {
-      // Use delayed message exchange plugin
-      channel.publish('tasks.delayed', 'task', Buffer.from(taskId), {
-        persistent: true,
-        headers: {
-          'x-delay': delayMs
-        }
-      });
-    } else {
-      // Fallback to simple delayed republishing
-      const message = JSON.stringify({
-        taskId,
-        delayUntil: Date.now() + delayMs
-      });
-      
-      const queueName = process.env.RABBITMQ_TASKS_QUEUE || 'tasks.todo';
-      channel.sendToQueue(queueName, Buffer.from(message), {
-        persistent: true
-      });
-    }
-    
-    console.log(`Republished task ${taskId} with delay ${delayMs}ms`);
-  } catch (error) {
-    console.error('Failed to republish task to RabbitMQ:', error);
-    throw new Error(`Failed to republish task ${taskId} to RabbitMQ: ${error}`);
-  }
+  });
 }
 
 /**
@@ -155,11 +192,22 @@ export async function closeRabbitMQConnection(): Promise<void> {
  * Initialize RabbitMQ connection at startup
  */
 export async function initializeRabbitMQ(): Promise<void> {
-  try {
-    await getRabbitMQConnection();
-    console.log('RabbitMQ connection initialized successfully');
-  } catch (error) {
-    console.error('Failed to initialize RabbitMQ connection:', error);
-    throw new Error(`Failed to initialize RabbitMQ connection: ${error}`);
-  }
+  const tracer = trace.getTracer('rabbitmq-service');
+  
+  return tracer.startActiveSpan('initializeRabbitMQ', async (span) => {
+    try {
+      await getRabbitMQConnection();
+      console.log('RabbitMQ connection initialized successfully');
+    } catch (error) {
+      console.error('Failed to initialize RabbitMQ connection:', error);
+      span.recordException(error as Error);
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: `Failed to initialize RabbitMQ connection: ${error}`
+      });
+      throw new Error(`Failed to initialize RabbitMQ connection: ${error}`);
+    } finally {
+      span.end();
+    }
+  });
 }

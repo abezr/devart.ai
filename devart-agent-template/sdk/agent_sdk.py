@@ -6,6 +6,8 @@ import json
 import threading
 from typing import Callable, Dict, Any, List
 from functools import wraps
+from opentelemetry import trace
+from opentelemetry.instrumentation.pika import PikaInstrumentor
 
 class AgentSDK:
     def __init__(self, agent_id: str, api_key: str, api_base_url: str):
@@ -19,6 +21,10 @@ class AgentSDK:
         self.consumer_thread = None
         self.running = False
         self.solution_attempts = {}  # Track solution application attempts
+        
+        # Initialize OpenTelemetry instrumentation for RabbitMQ
+        self.pika_instrumentor = PikaInstrumentor()
+        self.pika_instrumentor.instrument()
 
     def _connect_to_rabbitmq(self):
         """Establish a connection to RabbitMQ."""
@@ -45,60 +51,78 @@ class AgentSDK:
             self.running = True
             
             def on_message(channel, method, properties, body):
-                if not self.running:
-                    return
-                    
-                try:
-                    # Parse the task ID or task data from the message
-                    message_data = body.decode('utf-8')
-                    
-                    # Check if it's a JSON message with delay information
+                # Create a span for message processing
+                tracer = trace.get_tracer(__name__)
+                with tracer.start_as_current_span("process_rabbitmq_message", attributes={
+                    "messaging.system": "rabbitmq",
+                    "messaging.destination": method.routing_key,
+                    "messaging.operation": "receive",
+                }) as span:
+                    if not self.running:
+                        return
+                        
                     try:
-                        message_obj = json.loads(message_data)
-                        task_id = message_obj.get('taskId')
-                        delay_until = message_obj.get('delayUntil')
+                        # Parse the task ID or task data from the message
+                        message_data = body.decode('utf-8')
                         
-                        # If there's a delay, check if it's time to process
-                        if delay_until and delay_until > time.time() * 1000:
-                            # Requeue the message with the remaining delay
-                            remaining_delay = int(delay_until - time.time() * 1000)
-                            if remaining_delay > 0:
-                                # Republish with delay (this would work with RabbitMQ delayed message exchange)
-                                channel.basic_publish(
-                                    exchange='',
-                                    routing_key=method.routing_key,
-                                    body=body,
-                                    properties=pika.BasicProperties(
-                                        headers={'x-delay': remaining_delay},
-                                        delivery_mode=2  # Make message persistent
+                        # Add message attributes to the span
+                        span.set_attribute("messaging.message_payload_size", len(message_data))
+                        
+                        # Check if it's a JSON message with delay information
+                        try:
+                            message_obj = json.loads(message_data)
+                            task_id = message_obj.get('taskId')
+                            delay_until = message_obj.get('delayUntil')
+                            
+                            # Add task attributes to the span
+                            if task_id:
+                                span.set_attribute("task.id", task_id)
+                            
+                            # If there's a delay, check if it's time to process
+                            if delay_until and delay_until > time.time() * 1000:
+                                # Requeue the message with the remaining delay
+                                remaining_delay = int(delay_until - time.time() * 1000)
+                                if remaining_delay > 0:
+                                    # Republish with delay (this would work with RabbitMQ delayed message exchange)
+                                    channel.basic_publish(
+                                        exchange='',
+                                        routing_key=method.routing_key,
+                                        body=body,
+                                        properties=pika.BasicProperties(
+                                            headers={'x-delay': remaining_delay},
+                                            delivery_mode=2  # Make message persistent
+                                        )
                                     )
-                                )
-                                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-                                return
-                    except json.JSONDecodeError:
-                        # If it's not JSON, treat it as a simple task ID
-                        task_id = message_data
-                    
-                    # Get the full task details from the API
-                    task = self.get_task_details(task_id)
-                    if task:
-                        # Try to execute the task with self-healing
-                        success = self._execute_task_with_self_healing(task, callback)
+                                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                                    return
+                        except json.JSONDecodeError:
+                            # If it's not JSON, treat it as a simple task ID
+                            task_id = message_data
+                            span.set_attribute("task.id", task_id)
                         
-                        if success:
-                            # Acknowledge the message if processing was successful
-                            channel.basic_ack(delivery_tag=method.delivery_tag)
+                        # Get the full task details from the API
+                        task = self.get_task_details(task_id)
+                        if task:
+                            # Try to execute the task with self-healing
+                            success = self._execute_task_with_self_healing(task, callback)
+                            
+                            if success:
+                                # Acknowledge the message if processing was successful
+                                channel.basic_ack(delivery_tag=method.delivery_tag)
+                            else:
+                                # Reject and requeue the message if processing failed
+                                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
                         else:
-                            # Reject and requeue the message if processing failed
+                            # If we couldn't get task details, reject and requeue
+                            print(f"Could not get details for task {task_id}")
                             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-                    else:
-                        # If we couldn't get task details, reject and requeue
-                        print(f"Could not get details for task {task_id}")
+                    except Exception as e:
+                        print(f"Error processing message: {e}")
+                        # Record the exception in the span
+                        span.record_exception(e)
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                        # Reject and requeue the message
                         channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-                except Exception as e:
-                    print(f"Error processing message: {e}")
-                    # Reject and requeue the message
-                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             
             queue_name = os.getenv('RABBITMQ_TASKS_QUEUE', 'tasks.todo')
             self.rabbitmq_channel.basic_qos(prefetch_count=1)  # Process one message at a time

@@ -3,6 +3,12 @@ import time
 import signal
 import sys
 from sdk.agent_sdk import AgentSDK
+from sdk.opentelemetry import initialize_opentelemetry, get_tracer
+from opentelemetry import trace
+
+# Initialize OpenTelemetry
+otel_provider = initialize_opentelemetry()
+tracer = get_tracer()
 
 # Global flag for graceful shutdown
 shutdown_requested = False
@@ -16,22 +22,44 @@ def process_task(task):
     """Process a task received from the queue."""
     global shutdown_requested
     
-    if shutdown_requested:
-        return False
+    # Create a span for the task processing
+    with tracer.start_as_current_span("process_task") as span:
+        # Set attributes on the span
+        span.set_attribute("task.id", task.get('id', 'unknown'))
+        span.set_attribute("task.title", task.get('title', 'unknown'))
         
-    print(f"Processing task: {task['id']} - {task['title']}")
-    
-    # --- AGENT'S CORE LOGIC GOES HERE ---
-    print("Processing task...")
-    time.sleep(10)  # Simulate work
-    print("Processing complete.")
-    # --- END OF CORE LOGIC ---
-
-    # Mark the task as done
-    sdk.update_task_status(task['id'], "DONE")
-    print(f"Task {task['id']} completed.")
-    
-    return True
+        if shutdown_requested:
+            span.set_attribute("task.result", "cancelled")
+            span.set_status(trace.Status(trace.StatusCode.ERROR, "Task cancelled due to shutdown"))
+            return False
+            
+        print(f"Processing task: {task['id']} - {task['title']}")
+        
+        try:
+            # --- AGENT'S CORE LOGIC GOES HERE ---
+            print("Processing task...")
+            time.sleep(10)  # Simulate work
+            print("Processing complete.")
+            # --- END OF CORE LOGIC ---
+            
+            # Mark the task as done
+            sdk.update_task_status(task['id'], "DONE")
+            print(f"Task {task['id']} completed.")
+            
+            # Record success in the span
+            span.set_attribute("task.result", "success")
+            span.set_attribute("task.status", "DONE")
+            
+            return True
+            
+        except Exception as e:
+            # Record the exception in the span
+            span.record_exception(e)
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            span.set_attribute("task.result", "error")
+            
+            print(f"Error processing task {task['id']}: {e}")
+            return False
 
 def main():
     global shutdown_requested

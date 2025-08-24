@@ -14,6 +14,12 @@ import { provisionSandbox, terminateSandbox } from './services/kubernetes';
 import { searchKnowledge } from './services/knowledge';
 import { rateLimitKnowledgeQueries, validateKnowledgeSearchRequest } from './lib/knowledgeMiddleware';
 
+// Import OpenTelemetry initialization
+import { initializeOpenTelemetry } from './lib/opentelemetry';
+
+// Initialize OpenTelemetry
+const otelSDK = initializeOpenTelemetry();
+
 // This is the Cloudflare environment, which includes secrets
 export type Env = {
   SUPABASE_URL: string;
@@ -25,6 +31,10 @@ export type Env = {
 };
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Add tracing middleware as the first middleware
+import { tracingMiddleware } from './lib/tracingMiddleware';
+app.use('*', tracingMiddleware);
 
 // Add CORS middleware to allow requests from our UI
 app.use('/api/*', cors({
