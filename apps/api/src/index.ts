@@ -1128,6 +1128,27 @@ app.get('/api/analytics/service-usage', async (c) => {
     const { data, error } = await supabase
       .from('service_usage_log')
       .select(`
+import {
+  createArchitectureAnalysisTask,
+  getArchitectureAnalysisTask,
+  updateArchitectureAnalysisTaskStatus,
+  reportArchitectureFindings,
+  reportRefactoringSuggestions,
+  requestSandboxProvisioning,
+  executeRefactoring
+} from './services/architectureAnalysis';
+
+import { createSupabaseClient } from './services/supabaseClient';
+import { publishTask } from './services/workerPublisher';
+
+// Performance Analysis: Fetch Service Usage Analytics (can be called manually or via cron)
+app.get('/api/analytics/service-usage', async (c) => {
+  try {
+    const supabase = createSupabaseClient(c.env);
+    
+    const { data, error } = await supabase
+      .from('logs')
+      .select(`
         service_id,
         count(*) as usage_count,
         sum(charge_amount) as total_cost,
