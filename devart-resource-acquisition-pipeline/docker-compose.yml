@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  scout-agent:
+    build: .
+    command: python scout_agent.py
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - RABBITMQ_OPPORTUNITY_EXCHANGE=opportunity_exchange
+      - RABBITMQ_RAW_NEWS_QUEUE=raw_news_queue
+    depends_on:
+      - rabbitmq
+    volumes:
+      - .:/app
+
+  parser-agent:
+    build: .
+    command: python parser_agent.py
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - RABBITMQ_OPPORTUNITY_EXCHANGE=opportunity_exchange
+      - RABBITMQ_RAW_NEWS_QUEUE=raw_news_queue
+      - RABBITMQ_PARSED_NEWS_QUEUE=parsed_news_queue
+    depends_on:
+      - rabbitmq
+    volumes:
+      - .:/app
+
+  classifier-agent:
+    build: .
+    command: python classifier_agent.py
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - RABBITMQ_OPPORTUNITY_EXCHANGE=opportunity_exchange
+      - RABBITMQ_PARSED_NEWS_QUEUE=parsed_news_queue
+      - RABBITMQ_CLASSIFIED_OPS_QUEUE=classified_ops_queue
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - rabbitmq
+    volumes:
+      - .:/app
+
+  analysis-agent:
+    build: .
+    command: python analysis_agent.py
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - RABBITMQ_OPPORTUNITY_EXCHANGE=opportunity_exchange
+      - RABBITMQ_CLASSIFIED_OPS_QUEUE=classified_ops_queue
+      - RABBITMQ_NEW_OPPORTUNITY_QUEUE=new_opportunity_queue
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+    depends_on:
+      - rabbitmq
+    volumes:
+      - .:/app
+
+  partnership-agent:
+    build: .
+    command: python partnership_agent.py
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - RABBITMQ_OPPORTUNITY_EXCHANGE=opportunity_exchange
+      - RABBITMQ_NEW_OPPORTUNITY_QUEUE=new_opportunity_queue
+      - RABBITMQ_INTEGRATION_PLANNING_QUEUE=integration_planning_queue
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - DEVART_API_BASE_URL=${DEVART_API_BASE_URL}
+      - DEVART_API_KEY=${DEVART_API_KEY}
+    depends_on:
+      - rabbitmq
+    volumes:
+      - .:/app
+
+  integration-planner-agent:
+    build: .
+    command: python integration_planner_agent.py
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - RABBITMQ_OPPORTUNITY_EXCHANGE=opportunity_exchange
+      - RABBITMQ_INTEGRATION_PLANNING_QUEUE=integration_planning_queue
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - DEVART_API_BASE_URL=${DEVART_API_BASE_URL}
+      - DEVART_API_KEY=${DEVART_API_KEY}
+    depends_on:
+      - rabbitmq
+    volumes:
+      - .:/app
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+volumes:
+  rabbitmq_data:

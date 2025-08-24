@@ -1,0 +1,311 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: resource-acquisition
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: resource-acquisition
+data:
+  RABBITMQ_URL: "amqp://rabbitmq.resource-acquisition.svc.cluster.local:5672"
+  RABBITMQ_OPPORTUNITY_EXCHANGE: "opportunity_exchange"
+  RABBITMQ_RAW_NEWS_QUEUE: "raw_news_queue"
+  RABBITMQ_PARSED_NEWS_QUEUE: "parsed_news_queue"
+  RABBITMQ_CLASSIFIED_OPS_QUEUE: "classified_ops_queue"
+  RABBITMQ_NEW_OPPORTUNITY_QUEUE: "new_opportunity_queue"
+  RABBITMQ_INTEGRATION_PLANNING_QUEUE: "integration_planning_queue"
+  DEVART_API_BASE_URL: "http://devart-api.devart.svc.cluster.local:8787"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scout-agent
+  namespace: resource-acquisition
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scout-agent
+  template:
+    metadata:
+      labels:
+        app: scout-agent
+    spec:
+      containers:
+      - name: scout-agent
+        image: devart/resource-acquisition-agent:latest
+        command: ["python", "scout_agent.py"]
+        envFrom:
+        - configMapRef:
+            name: agent-config
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: openai-api-key
+        - name: SUPABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: supabase-url
+        - name: SUPABASE_SERVICE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: supabase-service-key
+        - name: DEVART_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: devart-api-key
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      volumes:
+      - name: app-code
+        hostPath:
+          path: /app
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: parser-agent
+  namespace: resource-acquisition
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: parser-agent
+  template:
+    metadata:
+      labels:
+        app: parser-agent
+    spec:
+      containers:
+      - name: parser-agent
+        image: devart/resource-acquisition-agent:latest
+        command: ["python", "parser_agent.py"]
+        envFrom:
+        - configMapRef:
+            name: agent-config
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: openai-api-key
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      volumes:
+      - name: app-code
+        hostPath:
+          path: /app
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: classifier-agent
+  namespace: resource-acquisition
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: classifier-agent
+  template:
+    metadata:
+      labels:
+        app: classifier-agent
+    spec:
+      containers:
+      - name: classifier-agent
+        image: devart/resource-acquisition-agent:latest
+        command: ["python", "classifier_agent.py"]
+        envFrom:
+        - configMapRef:
+            name: agent-config
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: openai-api-key
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      volumes:
+      - name: app-code
+        hostPath:
+          path: /app
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analysis-agent
+  namespace: resource-acquisition
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analysis-agent
+  template:
+    metadata:
+      labels:
+        app: analysis-agent
+    spec:
+      containers:
+      - name: analysis-agent
+        image: devart/resource-acquisition-agent:latest
+        command: ["python", "analysis_agent.py"]
+        envFrom:
+        - configMapRef:
+            name: agent-config
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: openai-api-key
+        - name: SUPABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: supabase-url
+        - name: SUPABASE_SERVICE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: supabase-service-key
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      volumes:
+      - name: app-code
+        hostPath:
+          path: /app
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: partnership-agent
+  namespace: resource-acquisition
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: partnership-agent
+  template:
+    metadata:
+      labels:
+        app: partnership-agent
+    spec:
+      containers:
+      - name: partnership-agent
+        image: devart/resource-acquisition-agent:latest
+        command: ["python", "partnership_agent.py"]
+        envFrom:
+        - configMapRef:
+            name: agent-config
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: openai-api-key
+        - name: SUPABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: supabase-url
+        - name: SUPABASE_SERVICE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: supabase-service-key
+        - name: DEVART_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: devart-api-key
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      volumes:
+      - name: app-code
+        hostPath:
+          path: /app
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: integration-planner-agent
+  namespace: resource-acquisition
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: integration-planner-agent
+  template:
+    metadata:
+      labels:
+        app: integration-planner-agent
+    spec:
+      containers:
+      - name: integration-planner-agent
+        image: devart/resource-acquisition-agent:latest
+        command: ["python", "integration_planner_agent.py"]
+        envFrom:
+        - configMapRef:
+            name: agent-config
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: openai-api-key
+        - name: SUPABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: supabase-url
+        - name: SUPABASE_SERVICE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: supabase-service-key
+        - name: DEVART_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: devart-api-key
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      volumes:
+      - name: app-code
+        hostPath:
+          path: /app
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-secrets
+  namespace: resource-acquisition
+type: Opaque
+data:
+  # These values need to be base64 encoded
+  openai-api-key: eW91ci1vcGVuYWktYXBpLWtleS1oZXJl
+  supabase-url: eW91ci1zdXBhYmFzZS11cmwtaGVyZQ==
+  supabase-service-key: eW91ci1zdXBhYmFzZS1zZXJ2aWNlLWtleS1oZXJl
+  devart-api-key: eW91ci1kZXZ2YXJ0LWFwaS1rZXktaGVyZQ==

@@ -68,6 +68,14 @@ graph TD
 
 ## ✨ Core Features
 
+### Autonomous Ecosystem Expansion
+
+**Opportunity Discovery Pipeline**: A multi-agent system that autonomously scans external sources (news feeds, blogs) to discover new free-tier services, trials, and partnership opportunities.
+
+**AI-Powered Analysis & Qualification**: The pipeline uses LLMs to parse, classify, and analyze discovered opportunities, extracting structured data on their potential value to the platform.
+
+**Automated Outreach & Integration**: A specialized PartnershipAgent handles lead generation and service registration, with a human-in-the-loop approval workflow. Once a new tool is acquired, an IntegrationPlannerAgent automatically creates the engineering tasks required to integrate it.
+
 ### Autonomous Platform Evolution
 
 **Meta-Agent System**: A specialized, self-directing agent that ingests and analyzes the platform's own strategic roadmap. It uses a hybrid RAG (LlamaIndex) and multi-agent orchestration (Langroid) architecture to reason about future features, generate detailed development tasks, and assign them to the appropriate specialized agents in the workforce.

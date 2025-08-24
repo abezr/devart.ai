@@ -938,3 +938,42 @@ CREATE POLICY "Allow supervisors and admins to manage templates" ON generative_r
   FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
 CREATE POLICY "Allow viewers to read templates" ON generative_remediation_templates
   FOR SELECT USING (get_my_role() = 'viewer');
+
+-- =====================================================
+-- Autonomous Resource Acquisition Pipeline Tables
+-- =====================================================
+
+-- Opportunities Table
+-- Stores structured data about potential free tiers, trials, and partnerships
+CREATE TABLE opportunities (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_url TEXT NOT NULL,
+  provider_name TEXT,
+  opportunity_type TEXT, -- 'FREE_TIER', 'TRIAL', 'PARTNERSHIP_LEAD', 'SURVEY'
+  summary TEXT,
+  extracted_attributes JSONB, -- Key features, limits, contact info, etc.
+  status TEXT NOT NULL DEFAULT 'DISCOVERED', -- 'DISCOVERED', 'ANALYZED', 'CONTACTED', 'SECURED', 'INTEGRATED'
+  discovered_at TIMESTAMPTZ DEFAULT NOW(),
+  processed_at TIMESTAMPTZ
+);
+
+COMMENT ON TABLE opportunities IS 'Stores structured data about potential free tiers, trials, and partnerships.';
+COMMENT ON COLUMN opportunities.source_url IS 'The URL where the opportunity was discovered.';
+COMMENT ON COLUMN opportunities.provider_name IS 'The name of the provider offering the opportunity.';
+COMMENT ON COLUMN opportunities.opportunity_type IS 'The type of opportunity: free tier, trial, partnership lead, or survey.';
+COMMENT ON COLUMN opportunities.summary IS 'A brief summary of the opportunity.';
+COMMENT ON COLUMN opportunities.extracted_attributes IS 'Key features, limits, contact info, etc.';
+COMMENT ON COLUMN opportunities.status IS 'The current status of the opportunity.';
+COMMENT ON COLUMN opportunities.discovered_at IS 'Timestamp when the opportunity was discovered.';
+COMMENT ON COLUMN opportunities.processed_at IS 'Timestamp when the opportunity was processed.';
+
+-- Add indexes for efficient querying
+CREATE INDEX idx_opportunities_status ON opportunities(status);
+CREATE INDEX idx_opportunities_providertype ON opportunities(provider_name, opportunity_type);
+
+-- Enable RLS on opportunities
+ALTER TABLE opportunities ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow supervisors and admins to manage opportunities" ON opportunities
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+CREATE POLICY "Allow viewers to read opportunities" ON opportunities
+  FOR SELECT USING (get_my_role() = 'viewer');
