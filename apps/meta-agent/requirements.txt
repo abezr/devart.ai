@@ -7,3 +7,8 @@ python-dotenv==1.0.0
 flask==2.3.2
 requests==2.31.0
 pydantic==2.0.3
+pytesseract==0.3.10
+pdf2image==1.16.3
+PyJWT==2.8.0
+redis==4.6.0
+cryptography==41.0.0

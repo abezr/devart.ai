@@ -240,25 +240,6 @@ node test-phase10-features.ts
 
 **Workflow Engine**: Multi-stage, reusable workflows can be defined, managed, and triggered from the UI or via API. Tasks in a workflow are automatically chained together with parent-child relationships and inherit priority from their parent tasks.
 
-## 👨‍💻 Developer Experience
-
-### Agent Development
-
-devart.ai provides a comprehensive Python SDK and template repository for rapid GenAI agent development:
-
-- **Agent SDK**: Core functionality for claiming tasks and updating status with proper error handling
-- **Template Repository**: Complete example implementation with work loop pattern
-- **RabbitMQ Integration**: Event-driven task consumption with graceful shutdown handling
-- **Capability Management**: Automatic capability declaration and task matching
-- **Sandbox Execution**: Secure, isolated execution environments with resource limits
-
-### Development Tools
-
-- **Comprehensive Testing Suite**: Unit tests, integration tests, and end-to-end tests for all components
-- **Observability Integration**: Built-in OpenTelemetry instrumentation for tracing and monitoring
-- **Documentation**: Complete API documentation and usage examples
-- **Deployment Scripts**: Automated setup for Grafana dashboards and data sources
-
 ## 🗺️ Future Roadmap
 
 The platform is now a mature, end-to-end solution. Future work will focus on achieving full platform autonomy, enhancing the ecosystem, and achieving multi-tenancy.
@@ -290,6 +271,25 @@ The platform is now a mature, end-to-end solution. Future work will focus on ach
 - Add compliance checking capabilities for various regulatory frameworks
 - Enhance audit logging for all system activities
 - Implement data encryption at rest and in transit
+
+## 👨‍💻 Developer Experience
+
+### Agent Development
+
+devart.ai provides a comprehensive Python SDK and template repository for rapid GenAI agent development:
+
+- **Agent SDK**: Core functionality for claiming tasks and updating status with proper error handling
+- **Template Repository**: Complete example implementation with work loop pattern
+- **RabbitMQ Integration**: Event-driven task consumption with graceful shutdown handling
+- **Capability Management**: Automatic capability declaration and task matching
+- **Sandbox Execution**: Secure, isolated execution environments with resource limits
+
+### Development Tools
+
+- **Comprehensive Testing Suite**: Unit tests, integration tests, and end-to-end tests for all components
+- **Observability Integration**: Built-in OpenTelemetry instrumentation for tracing and monitoring
+- **Documentation**: Complete API documentation and usage examples
+- **Deployment Scripts**: Automated setup for Grafana dashboards and data sources
 
 ## ⚖️ License
 

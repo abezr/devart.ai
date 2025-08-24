@@ -7,7 +7,11 @@ allowing external triggering of roadmap analysis and task generation.
 
 from flask import Flask, request, jsonify
 import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from src.analysis.document_ingestion import RoadmapDocumentIngestion
+from src.analysis.knowledge_graph import RoadmapKnowledgeGraph
+from src.analysis.hybrid_query_engine import HybridQueryEngine
 from src.orchestration.meta_agent import MetaAgent
 from src.utils.opentelemetry import initialize_opentelemetry
 from src.utils.security import require_api_key, rate_limit
@@ -30,6 +34,18 @@ document_ingestion = RoadmapDocumentIngestion(
     db_connection_string=db_connection_string
 )
 
+# Initialize the knowledge graph
+knowledge_graph = RoadmapKnowledgeGraph(
+    openai_api_key=openai_api_key,
+    db_connection_string=db_connection_string
+)
+
+# Initialize the hybrid query engine
+hybrid_query_engine = HybridQueryEngine(
+    document_ingestion=document_ingestion,
+    knowledge_graph=knowledge_graph
+)
+
 # Initialize the meta-agent
 meta_agent = MetaAgent(
     api_base_url=api_base_url,
@@ -47,6 +63,8 @@ def get_meta_agent_status():
         "version": "1.0.0",
         "components": {
             "document_ingestion": "active",
+            "knowledge_graph": "active",
+            "hybrid_query_engine": "active",
             "task_generation": "active",
             "agent_assignment": "active"
         }
@@ -57,20 +75,37 @@ def get_meta_agent_status():
 @require_api_key
 @rate_limit(max_requests=50, window=3600)  # 50 requests per hour
 def analyze_roadmap():
-    """Trigger roadmap analysis and task generation."""
+    """Trigger roadmap analysis using hybrid query engine."""
     try:
         data = request.get_json()
         query = data.get('query', 'What are the next features to implement?')
         similarity_threshold = data.get('similarity_threshold', 0.7)
         
-        # Query the roadmap knowledge base
-        results = document_ingestion.query_roadmap(query, similarity_threshold)
+        # Use hybrid query engine for comprehensive analysis
+        results = hybrid_query_engine.query(query, similarity_threshold)
         
         return jsonify({
             "status": "success",
             "query": query,
             "results": results
         })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/meta-agent/get-next-priority', methods=['GET'])
+@require_api_key
+@rate_limit(max_requests=50, window=3600)  # 50 requests per hour
+def get_next_priority():
+    """Get the next strategic priority from the roadmap."""
+    try:
+        # Use hybrid query engine to identify next priority
+        priority_result = hybrid_query_engine.get_next_strategic_priority()
+        
+        return jsonify(priority_result)
     except Exception as e:
         return jsonify({
             "status": "error",
@@ -115,6 +150,45 @@ def ingest_documents():
         result = document_ingestion.ingest_documents(documents_path)
         
         return jsonify(result)
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/meta-agent/ingest-evaluation-result', methods=['POST'])
+@require_api_key
+@rate_limit(max_requests=50, window=3600)  # 50 requests per hour
+def ingest_evaluation_result():
+    """Ingest evaluation results into the knowledge base."""
+    try:
+        data = request.get_json()
+        
+        # Extract evaluation data
+        evaluation_data = data.get('evaluation_data', {})
+        task_id = data.get('task_id')
+        feature_name = data.get('feature_name')
+        metrics = data.get('metrics', {})
+        feedback = data.get('feedback', '')
+        
+        # Store evaluation result in knowledge graph
+        evaluation_text = f"""
+        Evaluation Results for {feature_name} (Task ID: {task_id})
+        Metrics: {metrics}
+        Feedback: {feedback}
+        """
+        
+        result = knowledge_graph.add_document_to_knowledge_graph(
+            text=evaluation_text,
+            document_source=f"evaluation_{task_id}"
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": "Evaluation result ingested successfully",
+            "knowledge_graph_result": result
+        })
     except Exception as e:
         return jsonify({
             "status": "error",

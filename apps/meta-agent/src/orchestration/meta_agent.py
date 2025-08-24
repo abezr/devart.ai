@@ -14,6 +14,7 @@ from langroid.agent.special.llm_response import LLMResponse
 from pydantic import BaseModel
 import json
 import requests
+from src.orchestration.specialized_agents import SpecWriterAgent, TaskGeneratorAgent, TechnicalSpecification
 
 
 class TaskSpecification(BaseModel):
@@ -65,10 +66,14 @@ class MetaAgent:
                 """,
             )
         )
+        
+        # Initialize specialized agents
+        self.spec_writer_agent = SpecWriterAgent()
+        self.task_generator_agent = TaskGeneratorAgent(api_base_url, api_key)
 
     def analyze_roadmap(self, query: str) -> str:
         """
-        Analyze the roadmap to identify next features to implement.
+        Analyze the roadmap to identify next features to implement using the hybrid query engine.
         
         Args:
             query: Query to ask about the roadmap
@@ -76,57 +81,80 @@ class MetaAgent:
         Returns:
             Analysis result as a string
         """
-        # In a real implementation, this would interface with the LlamaIndex analysis layer
-        # For now, we'll simulate the response
-        doc = ChatDocument(content=query)
-        response = self.agent.llm_response(doc)
-        return response.content
+        try:
+            # Call the hybrid query engine through the API
+            response = requests.post(
+                f"{self.api_base_url}/api/meta-agent/analyze-roadmap",
+                headers=self.headers,
+                json={
+                    "query": query,
+                    "similarity_threshold": 0.7
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            # Extract the synthesized answer
+            synthesized_answer = result.get("results", {}).get("synthesized_answer", "")
+            if synthesized_answer:
+                return synthesized_answer
+            
+            # Fallback to vector search results
+            vector_results = result.get("results", {}).get("vector_search_results", [])
+            if vector_results:
+                return f"Based on semantic search: {vector_results[0].get('content', '')}"
+            
+            # Final fallback
+            return "No specific roadmap analysis available."
+            
+        except Exception as e:
+            print(f"Error analyzing roadmap: {str(e)}")
+            # Fallback to simple LLM response
+            doc = ChatDocument(content=query)
+            response = self.agent.llm_response(doc)
+            return response.content
 
-    def generate_tasks(self, roadmap_analysis: str) -> List[TaskSpecification]:
+    def generate_technical_specification(self, feature_goal: str) -> TechnicalSpecification:
         """
-        Generate tasks based on roadmap analysis.
+        Generate a technical specification for a feature goal using the SpecWriterAgent.
         
         Args:
-            roadmap_analysis: Analysis of the roadmap
+            feature_goal: High-level feature goal description
+            
+        Returns:
+            Technical specification
+        """
+        print(f"Generating technical specification for: {feature_goal}")
+        specification = self.spec_writer_agent.create_specification(feature_goal)
+        return specification
+
+    def generate_tasks_from_specification(self, specification: TechnicalSpecification) -> List[TaskSpecification]:
+        """
+        Generate tasks from a technical specification using the TaskGeneratorAgent.
+        
+        Args:
+            specification: Technical specification
             
         Returns:
             List of task specifications
         """
-        # Ask the agent to generate tasks based on the analysis
-        task_prompt = f"""
-        Based on this roadmap analysis:
-        {roadmap_analysis}
-        
-        Please generate a list of specific development tasks that need to be implemented.
-        For each task, provide:
-        - Title: A concise title
-        - Description: Detailed description of what needs to be done
-        - Priority: One of LOW, MEDIUM, HIGH, CRITICAL
-        - Required_capabilities: List of skills needed (e.g., ["python", "react", "kubernetes"])
-        - Estimated_effort: One of SMALL, MEDIUM, LARGE
-        
-        Respond in JSON format as a list of task objects.
+        print(f"Generating tasks from specification: {specification.feature_name}")
+        tasks = self.task_generator_agent.generate_tasks(specification)
+        return tasks
+
+    def generate_evaluation_tasks(self, feature_name: str) -> List[TaskSpecification]:
         """
+        Generate evaluation tasks for a feature using the TaskGeneratorAgent.
         
-        doc = ChatDocument(content=task_prompt)
-        response = self.agent.llm_response(doc)
-        
-        try:
-            # Parse the JSON response
-            tasks_data = json.loads(response.content)
-            tasks = [TaskSpecification(**task) for task in tasks_data]
-            return tasks
-        except json.JSONDecodeError:
-            # If JSON parsing fails, create a default task
-            return [
-                TaskSpecification(
-                    title="Implement feature from roadmap",
-                    description=roadmap_analysis,
-                    priority="MEDIUM",
-                    required_capabilities=["python"],
-                    estimated_effort="MEDIUM"
-                )
-            ]
+        Args:
+            feature_name: Name of the feature to evaluate
+            
+        Returns:
+            List of evaluation task specifications
+        """
+        print(f"Generating evaluation tasks for: {feature_name}")
+        evaluation_tasks = self.task_generator_agent.generate_evaluation_tasks(feature_name)
+        return evaluation_tasks
 
     def get_available_agents(self) -> List[AgentInfo]:
         """
@@ -241,35 +269,14 @@ class MetaAgent:
             Task ID if successful, None otherwise
         """
         try:
-            payload = {
-                "title": task.title,
-                "description": task.description,
-                "priority": task.priority,
-                "required_capabilities": task.required_capabilities
-            }
-            
-            response = requests.post(
-                f"{self.api_base_url}/api/tasks",
-                headers=self.headers,
-                json=payload
-            )
-            response.raise_for_status()
-            task_data = response.json()
-            
-            task_id = task_data["id"]
-            
-            # If we have an assigned agent, update the task with agent assignment
-            if assigned_agent_id:
-                self.assign_task_to_agent(task_id, assigned_agent_id)
-            
-            return task_id
+            return self.task_generator_agent.create_task_in_system(task)
         except Exception as e:
             print(f"Error creating task: {str(e)}")
             return None
 
     def process_roadmap_and_generate_tasks(self, roadmap_query: str = "What are the next features to implement?") -> List[str]:
         """
-        Main workflow: analyze roadmap, generate tasks, and assign to agents.
+        Main workflow: analyze roadmap, generate specification, generate tasks, and assign to agents.
         
         Args:
             roadmap_query: Query to ask about the roadmap
@@ -282,17 +289,28 @@ class MetaAgent:
         analysis = self.analyze_roadmap(roadmap_query)
         print(f"Roadmap analysis: {analysis}")
         
-        # 2. Generate tasks
-        print("Generating tasks...")
-        tasks = self.generate_tasks(analysis)
+        # 2. Generate technical specification
+        print("Generating technical specification...")
+        specification = self.generate_technical_specification(analysis)
+        print(f"Generated specification for: {specification.feature_name}")
+        
+        # 3. Generate tasks from specification
+        print("Generating tasks from specification...")
+        tasks = self.generate_tasks_from_specification(specification)
         print(f"Generated {len(tasks)} tasks")
         
-        # 3. Get available agents
+        # 4. Generate evaluation tasks
+        print("Generating evaluation tasks...")
+        evaluation_tasks = self.generate_evaluation_tasks(specification.feature_name)
+        tasks.extend(evaluation_tasks)
+        print(f"Generated {len(evaluation_tasks)} evaluation tasks")
+        
+        # 5. Get available agents
         print("Fetching available agents...")
         agents = self.get_available_agents()
         print(f"Found {len(agents)} agents")
         
-        # 4. Create tasks and assign to agents
+        # 6. Create tasks and assign to agents
         created_task_ids = []
         for task in tasks:
             print(f"Processing task: {task.title}")
