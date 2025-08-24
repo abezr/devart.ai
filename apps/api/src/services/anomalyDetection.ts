@@ -1,5 +1,6 @@
 import { Env } from '../lib/types';
 import { sendTelegramMessage } from './telegram';
+import { analyzeRootCause } from './rootCauseAnalysis';
 
 /**
  * Anomaly detection result interface
@@ -13,6 +14,9 @@ export interface AnomalyResult {
   description: string;
   detected_at: string;
   metrics?: Record<string, number>;
+  root_cause?: any; // Root cause analysis result
+  root_cause_confidence?: 'LOW' | 'MEDIUM' | 'HIGH';
+  suggested_actions?: string[];
 }
 
 /**
@@ -444,19 +448,53 @@ export async function generateAlerts(anomalies: AnomalyResult[], env: Env): Prom
   
   // Send Telegram notifications for critical and high severity anomalies
   if (criticalAnomalies.length > 0) {
-    const message = `🚨 *CRITICAL Anomalies Detected*\n\n` +
-      `Detected ${criticalAnomalies.length} critical anomalies:\n` +
-      criticalAnomalies.map(a => `• ${a.anomaly_type}: ${a.description}`).join('\n') +
-      `\n\nPlease investigate immediately.`;
+    let message = `🚨 *CRITICAL Anomalies Detected*\n\n` +
+      `Detected ${criticalAnomalies.length} critical anomalies:\n`;
+    
+    criticalAnomalies.forEach((a, index) => {
+      message += `${index + 1}. ${a.anomaly_type}: ${a.description}\n`;
+      
+      // Include root cause information if available
+      if (a.root_cause) {
+        message += `   Root Cause: ${a.root_cause.root_cause_category}\n`;
+        message += `   Details: ${a.root_cause.root_cause_details}\n`;
+        if (a.root_cause_confidence) {
+          message += `   Confidence: ${a.root_cause_confidence}\n`;
+        }
+        if (a.suggested_actions && a.suggested_actions.length > 0) {
+          message += `   Suggested Actions: ${a.suggested_actions.slice(0, 3).join(', ')}\n`;
+        }
+      }
+      message += '\n';
+    });
+    
+    message += `\nPlease investigate immediately.`;
     
     await sendTelegramMessage(env, message);
   }
   
   if (highAnomalies.length > 0) {
-    const message = `⚠️ *HIGH Severity Anomalies Detected*\n\n` +
-      `Detected ${highAnomalies.length} high severity anomalies:\n` +
-      highAnomalies.map(a => `• ${a.anomaly_type}: ${a.description}`).join('\n') +
-      `\n\nPlease review at your earliest convenience.`;
+    let message = `⚠️ *HIGH Severity Anomalies Detected*\n\n` +
+      `Detected ${highAnomalies.length} high severity anomalies:\n`;
+    
+    highAnomalies.forEach((a, index) => {
+      message += `${index + 1}. ${a.anomaly_type}: ${a.description}\n`;
+      
+      // Include root cause information if available
+      if (a.root_cause) {
+        message += `   Root Cause: ${a.root_cause.root_cause_category}\n`;
+        message += `   Details: ${a.root_cause.root_cause_details}\n`;
+        if (a.root_cause_confidence) {
+          message += `   Confidence: ${a.root_cause_confidence}\n`;
+        }
+        if (a.suggested_actions && a.suggested_actions.length > 0) {
+          message += `   Suggested Actions: ${a.suggested_actions.slice(0, 3).join(', ')}\n`;
+        }
+      }
+      message += '\n';
+    });
+    
+    message += `\nPlease review at your earliest convenience.`;
     
     await sendTelegramMessage(env, message);
   }
@@ -464,6 +502,18 @@ export async function generateAlerts(anomalies: AnomalyResult[], env: Env): Prom
   // Log all anomalies
   for (const anomaly of anomalies) {
     console.log(`Alert: ${anomaly.anomaly_type} (${anomaly.severity}) - ${anomaly.description}`);
+    
+    // Log root cause information if available
+    if (anomaly.root_cause) {
+      console.log(`  Root Cause: ${anomaly.root_cause.root_cause_category}`);
+      console.log(`  Details: ${anomaly.root_cause.root_cause_details}`);
+      if (anomaly.root_cause_confidence) {
+        console.log(`  Confidence: ${anomaly.root_cause_confidence}`);
+      }
+      if (anomaly.suggested_actions) {
+        console.log(`  Suggested Actions: ${anomaly.suggested_actions.join(', ')}`);
+      }
+    }
   }
 }
 
@@ -478,9 +528,37 @@ export async function storeResults(anomalies: AnomalyResult[], env: Env): Promis
   console.log(`Storing ${anomalies.length} anomalies in database`);
   
   for (const anomaly of anomalies) {
+    // Perform root cause analysis for each anomaly
+    if (!anomaly.root_cause) {
+      // Create an enhanced anomaly object for root cause analysis
+      const enhancedAnomaly = {
+        id: `temp-${Date.now()}`,
+        trace_id: anomaly.trace_id,
+        span_id: anomaly.span_id,
+        anomaly_type: anomaly.anomaly_type,
+        anomaly_subtype: anomaly.anomaly_subtype,
+        severity: anomaly.severity,
+        description: anomaly.description,
+        detected_at: anomaly.detected_at,
+        resolved: false,
+        root_cause: anomaly.root_cause
+      };
+      
+      // Analyze root cause
+      const rootCause = analyzeRootCause(enhancedAnomaly);
+      if (rootCause) {
+        anomaly.root_cause = {
+          root_cause_category: rootCause.root_cause_category,
+          root_cause_details: rootCause.root_cause_details
+        };
+        anomaly.root_cause_confidence = rootCause.confidence_score;
+        anomaly.suggested_actions = rootCause.suggested_actions;
+      }
+    }
+    
     console.log(`Stored anomaly: ${anomaly.trace_id} - ${anomaly.description}`);
     // In a real implementation, this would use Supabase client to insert
-    // records into the trace_anomalies table
+    // records into the trace_anomalies table with root cause information
   }
 }
 

@@ -62,7 +62,7 @@ graph TD
 
 ### Proactive Operations & Self-Monitoring
 
-**Advanced Anomaly Detection with Root Cause Analysis:** The system automatically analyzes trace data to detect performance regressions (latency, throughput) and security issues (error rate spikes) using statistical algorithms. With the new Root Cause Analysis feature, it not only flags problems but also suggests likely causes and provides actionable recommendations.
+**Advanced Anomaly Detection:** The system automatically analyzes trace data to detect performance regressions (latency, throughput) and security issues (error rate spikes) using statistical algorithms, proactively alerting supervisors to problems.
 
 **End-to-End Distributed Tracing:** Powered by OpenTelemetry, every request and workflow is traced across all system components, providing unparalleled visibility for debugging.
 
@@ -131,9 +131,9 @@ pnpm dev
 
 ## 🧠 System Concepts
 
-### Anomaly Detection with Root Cause Analysis
+### Anomaly Detection
 
-The platform continuously analyzes distributed trace data for deviations from the norm. Using statistical methods like Z-score analysis, it can proactively identify and flag issues like latency spikes or unusual error rates without manual intervention. The new Root Cause Analysis feature goes further by suggesting likely causes and providing actionable recommendations to help supervisors quickly resolve issues.
+The platform continuously analyzes distributed trace data for deviations from the norm. Using statistical methods like Z-score analysis, it can proactively identify and flag issues like latency spikes or unusual error rates without manual intervention.
 
 ### Observability
 
@@ -159,6 +159,7 @@ The platform is now a mature, end-to-end solution. Future work will focus on dee
 
 - Implement the AI-driven Workflow Optimization engine that analyzes historical `workflow_runs` data to suggest more efficient processes
 - Create a "meta-agent" that can autonomously manage the agent workforce, scaling it up or down based on queue depth and task requirements
+- Implement Root Cause Analysis on detected anomalies, allowing the system to not only flag a problem but also suggest its likely cause
 
 ### Ecosystem & Extensibility
 

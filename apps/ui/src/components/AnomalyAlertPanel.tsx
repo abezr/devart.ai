@@ -9,6 +9,12 @@ interface Anomaly {
   description: string;
   detected_at: string;
   resolved: boolean;
+  root_cause?: {
+    root_cause_category: string;
+    root_cause_details: string;
+  };
+  root_cause_confidence?: 'LOW' | 'MEDIUM' | 'HIGH';
+  suggested_actions?: string[];
 }
 
 const AnomalyAlertPanel: React.FC = () => {
@@ -77,6 +83,19 @@ const AnomalyAlertPanel: React.FC = () => {
         return 'bg-orange-100 text-orange-800 border-orange-200';
       default:
         return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const getConfidenceColor = (confidence: string) => {
+    switch (confidence) {
+      case 'HIGH':
+        return 'bg-green-100 text-green-800';
+      case 'MEDIUM':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'LOW':
+        return 'bg-red-100 text-red-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
     }
   };
 
@@ -185,6 +204,17 @@ const AnomalyAlertPanel: React.FC = () => {
                   <div className="mt-1 text-sm text-gray-500">
                     <p>{anomaly.description}</p>
                   </div>
+                  {anomaly.root_cause && (
+                    <div className="mt-2 p-2 bg-blue-50 rounded-md">
+                      <div className="text-xs font-medium text-blue-800">Root Cause: {anomaly.root_cause.root_cause_category}</div>
+                      <div className="text-xs text-blue-700">{anomaly.root_cause.root_cause_details}</div>
+                      {anomaly.root_cause_confidence && (
+                        <span className={`mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getConfidenceColor(anomaly.root_cause_confidence)}`}>
+                          {anomaly.root_cause_confidence} confidence
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <div className="mt-2 text-xs text-gray-400">
                     {new Date(anomaly.detected_at).toLocaleString()}
                   </div>
@@ -195,7 +225,7 @@ const AnomalyAlertPanel: React.FC = () => {
         )}
       </div>
       <div className="px-6 py-4 bg-gray-50 text-sm text-center">
-        <a href="/anomaly-dashboard" className="font-medium text-indigo-600 hover:text-indigo-500">
+        <a href="/anomalies" className="font-medium text-indigo-600 hover:text-indigo-500">
           View all anomalies
         </a>
       </div>

@@ -708,6 +708,45 @@ COMMENT ON COLUMN trace_anomalies.detected_at IS 'Timestamp when the anomaly was
 COMMENT ON COLUMN trace_anomalies.resolved IS 'Whether the anomaly has been resolved.';
 COMMENT ON COLUMN trace_anomalies.resolution_notes IS 'Notes about how the anomaly was resolved.';
 
+-- Add root cause analysis columns to trace_anomalies table
+ALTER TABLE trace_anomalies 
+  ADD COLUMN IF NOT EXISTS root_cause JSONB,
+  ADD COLUMN IF NOT EXISTS root_cause_confidence TEXT, -- 'LOW', 'MEDIUM', 'HIGH'
+  ADD COLUMN IF NOT EXISTS suggested_actions JSONB;
+
+-- Root Cause Patterns Table
+-- Stores root cause patterns for learning and improvement
+CREATE TABLE IF NOT EXISTS root_cause_patterns (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  anomaly_type TEXT NOT NULL,
+  anomaly_subtype TEXT,
+  root_cause_category TEXT NOT NULL,
+  root_cause_details TEXT,
+  pattern_identifiers JSONB,
+  confidence_score NUMERIC,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+COMMENT ON TABLE root_cause_patterns IS 'Stores root cause patterns for learning and improvement.';
+COMMENT ON COLUMN root_cause_patterns.anomaly_type IS 'The category of the anomaly: PERFORMANCE, SECURITY, or RESOURCE.';
+COMMENT ON COLUMN root_cause_patterns.anomaly_subtype IS 'The specific type of anomaly within the category.';
+COMMENT ON COLUMN root_cause_patterns.root_cause_category IS 'The category of the root cause.';
+COMMENT ON COLUMN root_cause_patterns.root_cause_details IS 'Detailed description of the root cause.';
+COMMENT ON COLUMN root_cause_patterns.pattern_identifiers IS 'Identifiers used to match this pattern.';
+COMMENT ON COLUMN root_cause_patterns.confidence_score IS 'Numeric confidence score for this pattern.';
+COMMENT ON COLUMN root_cause_patterns.created_at IS 'Timestamp when the pattern was created.';
+
+-- Add indexes for efficient querying
+CREATE INDEX IF NOT EXISTS idx_root_cause_patterns_type ON root_cause_patterns(anomaly_type);
+CREATE INDEX IF NOT EXISTS idx_root_cause_patterns_category ON root_cause_patterns(root_cause_category);
+
+-- Enable RLS on root_cause_patterns
+ALTER TABLE root_cause_patterns ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow supervisors and admins to manage patterns" ON root_cause_patterns
+  FOR ALL USING (get_my_role() IN ('supervisor', 'admin'));
+CREATE POLICY "Allow viewers to read patterns" ON root_cause_patterns
+  FOR SELECT USING (get_my_role() = 'viewer');
+
 -- Anomaly detection configuration
 CREATE TABLE anomaly_detection_config (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
